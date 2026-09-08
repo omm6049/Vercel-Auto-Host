@@ -677,14 +677,22 @@ async function executeDeployment(bot, chatId, session, rawName) {
   }
 }
 
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 /**
  * Direct Async Update Handler for Webhook & Serverless Execution
  */
 export async function processIncomingUpdate(update) {
   if (!update) return;
 
+  const token = process.env.TELEGRAM_BOT_TOKEN;
   const bot = botInstance || initTelegramBot();
-  if (!bot) return;
 
   // Handle Callback Queries (e.g. [Approve Access], [Reject Request], [Skip .env])
   if (update.callback_query) {
@@ -698,26 +706,32 @@ export async function processIncomingUpdate(update) {
       const requestId = data.split(':')[1];
       const record = await approveAccessRequest(requestId, cb.from?.first_name || 'Admin');
 
-      try {
-        await bot.answerCallbackQuery(cb.id, { text: `✅ Access APPROVED for ${record ? record.name : 'visitor'}!` });
-      } catch {}
-
-      if (chatId && messageId && record) {
+      if (token) {
         try {
-          await bot.editMessageText(
-            `✅ *ACCESS REQUEST APPROVED*\n\n` +
-            `👤 *Visitor Name:* ${record.name}\n` +
-            `🎯 *Reason for Contact:* ${record.reason}\n` +
-            `🛡️ *Status:* Granted by ${cb.from?.first_name || 'Admin'} ✅\n` +
-            `🕒 *Approved At:* ${new Date().toLocaleTimeString()}\n\n` +
-            `_Website launchpad is now unlocked for this visitor._`,
-            {
+          await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+            callback_query_id: cb.id,
+            text: `✅ Access APPROVED for ${record ? record.name : 'visitor'}!`,
+            show_alert: false
+          }, { timeout: 3500 });
+        } catch {}
+
+        if (chatId && messageId && record) {
+          try {
+            await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
               chat_id: chatId,
               message_id: messageId,
-              parse_mode: 'Markdown'
-            }
-          );
-        } catch {}
+              text: `✅ <b>ACCESS REQUEST APPROVED</b>\n\n` +
+                    `👤 <b>Visitor Name:</b> ${escapeHtml(record.name)}\n` +
+                    `🎯 <b>Reason for Contact:</b> ${escapeHtml(record.reason)}\n` +
+                    `🛡️ <b>Status:</b> Granted by ${escapeHtml(cb.from?.first_name || 'Admin')} ✅\n` +
+                    `🕒 <b>Approved At:</b> ${new Date().toLocaleTimeString()}\n\n` +
+                    `<i>Website launchpad is now unlocked for this visitor.</i>`,
+              parse_mode: 'HTML'
+            }, { timeout: 3500 });
+          } catch (e) {
+            console.warn('[Edit message error]:', e.message);
+          }
+        }
       }
       return;
     }
@@ -727,30 +741,36 @@ export async function processIncomingUpdate(update) {
       const requestId = data.split(':')[1];
       const record = await rejectAccessRequest(requestId, cb.from?.first_name || 'Admin');
 
-      try {
-        await bot.answerCallbackQuery(cb.id, { text: `❌ Access DECLINED for ${record ? record.name : 'visitor'}` });
-      } catch {}
-
-      if (chatId && messageId && record) {
+      if (token) {
         try {
-          await bot.editMessageText(
-            `❌ *ACCESS REQUEST DECLINED*\n\n` +
-            `👤 *Visitor Name:* ${record.name}\n` +
-            `🎯 *Reason for Contact:* ${record.reason}\n` +
-            `🚫 *Status:* Rejected by ${cb.from?.first_name || 'Admin'}\n` +
-            `🕒 *Declined At:* ${new Date().toLocaleTimeString()}`,
-            {
+          await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+            callback_query_id: cb.id,
+            text: `❌ Access DECLINED for ${record ? record.name : 'visitor'}`,
+            show_alert: false
+          }, { timeout: 3500 });
+        } catch {}
+
+        if (chatId && messageId && record) {
+          try {
+            await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
               chat_id: chatId,
               message_id: messageId,
-              parse_mode: 'Markdown'
-            }
-          );
-        } catch {}
+              text: `❌ <b>ACCESS REQUEST DECLINED</b>\n\n` +
+                    `👤 <b>Visitor Name:</b> ${escapeHtml(record.name)}\n` +
+                    `🎯 <b>Reason for Contact:</b> ${escapeHtml(record.reason)}\n` +
+                    `🚫 <b>Status:</b> Rejected by ${escapeHtml(cb.from?.first_name || 'Admin')}\n` +
+                    `🕒 <b>Declined At:</b> ${new Date().toLocaleTimeString()}`,
+              parse_mode: 'HTML'
+            }, { timeout: 3500 });
+          } catch (e) {
+            console.warn('[Edit message error]:', e.message);
+          }
+        }
       }
       return;
     }
 
-    if (data === 'skip_env' && chatId) {
+    if (data === 'skip_env' && chatId && bot) {
       const session = userSessions.get(chatId);
       if (session && session.step === 'AWAITING_ENV') {
         session.step = 'AWAITING_NAME';
@@ -764,15 +784,16 @@ export async function processIncomingUpdate(update) {
     return;
   }
 
+
   const msg = update.message;
   if (!msg) return;
 
   const chatId = msg.chat.id;
-  const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) {
     console.error('TELEGRAM_BOT_TOKEN missing in environment.');
     return;
   }
+
 
   // 1. /start command handler
   if (msg.text && msg.text.startsWith('/start')) {

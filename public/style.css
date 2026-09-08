@@ -57,6 +57,32 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Master Hidden Utility */
+.hidden {
+  display: none !important;
+}
+
+/* Master Cockpit Lock/Unlock State */
+#launchpadCockpit.locked-cockpit {
+  display: none !important;
+}
+
+#launchpadCockpit {
+  animation: cockpitReveal 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes cockpitReveal {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+
 html {
   font-size: 16px;
   scroll-behavior: smooth;

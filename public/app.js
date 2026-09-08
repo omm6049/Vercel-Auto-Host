@@ -783,6 +783,7 @@ function initAuthGate() {
     if (authRejectedBox) authRejectedBox.classList.add('hidden');
     if (launchpadCockpit) launchpadCockpit.classList.add('locked-cockpit');
     if (authSessionPill) authSessionPill.classList.add('hidden');
+    if (window.lucide) window.lucide.createIcons();
   };
 
   const unlockApplication = (userName = 'Authorized Visitor', animate = true) => {
@@ -797,17 +798,21 @@ function initAuthGate() {
       if (approvedGreetingText) {
         approvedGreetingText.textContent = `Welcome ${userName}! Your access request was approved by the administrator. Unlocking launchpad...`;
       }
+      if (window.lucide) window.lucide.createIcons();
 
       setTimeout(() => {
         if (authSection) authSection.classList.add('hidden');
         if (launchpadCockpit) launchpadCockpit.classList.remove('locked-cockpit');
+        if (window.lucide) window.lucide.createIcons();
         showToast(`🎉 Welcome, ${userName}! Launchpad unlocked.`);
       }, 1200);
     } else {
       if (authSection) authSection.classList.add('hidden');
       if (launchpadCockpit) launchpadCockpit.classList.remove('locked-cockpit');
+      if (window.lucide) window.lucide.createIcons();
     }
   };
+
 
   // Safe JSON parsing helper to prevent syntax errors on HTML responses
   const parseJsonResponse = async (res) => {
