@@ -510,23 +510,35 @@ function initFormHandler() {
     try {
       setTimeout(() => updateStep(50, 'Configuring Vercel Environment...', 'Setting up environment variables and uploading to Vercel API...'), 600);
 
-      const formData = new FormData();
-      formData.append('projectName', projectName);
-      if (appState.envContent) {
-        formData.append('envContent', appState.envContent);
+      let zipBase64 = null;
+      if (appState.uploadMode === 'ZIP' && appState.zipFile) {
+        zipBase64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const res = reader.result;
+            const b64 = typeof res === 'string' ? res.split(',')[1] || res : '';
+            resolve(b64);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(appState.zipFile);
+        });
       }
 
-      if (appState.uploadMode === 'ZIP' && appState.zipFile) {
-        formData.append('zipFile', appState.zipFile);
-      } else {
-        formData.append('htmlContent', appState.htmlContent);
-        formData.append('cssContent', appState.cssContent);
-        formData.append('jsContent', appState.jsContent);
-      }
+      const payload = {
+        projectName,
+        envContent: appState.envContent || '',
+        zipBase64,
+        htmlContent: appState.uploadMode === 'CLASSIC' ? appState.htmlContent : '',
+        cssContent: appState.uploadMode === 'CLASSIC' ? appState.cssContent : '',
+        jsContent: appState.uploadMode === 'CLASSIC' ? appState.jsContent : ''
+      };
 
       const response = await fetch('/api/deploy', {
         method: 'POST',
-        body: formData
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
       });
 
       const data = await response.json();
@@ -750,6 +762,9 @@ async function loadHistoryList() {
 
   try {
     const res = await fetch('/api/history');
+    if (!res.ok) {
+      return;
+    }
     const data = await res.json();
 
     if (!data.deployments || data.deployments.length === 0) {

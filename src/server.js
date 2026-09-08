@@ -151,7 +151,9 @@ app.post(
       let envContent = req.body.envContent || '';
       let zipBuffer = null;
 
-      if (req.files?.zipFile?.[0]) {
+      if (req.body.zipBase64) {
+        zipBuffer = Buffer.from(req.body.zipBase64, 'base64');
+      } else if (req.files?.zipFile?.[0]) {
         zipBuffer = req.files.zipFile[0].buffer;
       }
       if (req.files?.envFile?.[0]) {
