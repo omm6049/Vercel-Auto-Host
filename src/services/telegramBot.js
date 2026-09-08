@@ -215,18 +215,32 @@ export let botInstance = null;
 /**
  * Creates a new visitor authentication & access request and broadcasts approval buttons to Telegram Admin.
  */
-export async function createAccessRequest({ name, reason, ip }) {
+export async function createAccessRequest({ name, reason, ip, clientTime, clientTimezone, deviceInfo }) {
   loadRequestsFromDisk();
 
   const cleanName = (name || 'Anonymous Visitor').trim();
   const cleanReason = (reason || 'General inquiry & deployment access').trim();
+  const cleanIp = ip || 'Unknown';
+  
+  // Format exact time with timezone
+  const cleanTime = clientTime || new Date().toLocaleString('en-US', {
+    timeZone: clientTimezone || 'Asia/Kolkata',
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+    hour12: true
+  });
+  const tzLabel = clientTimezone ? ` (${clientTimezone})` : '';
+  const cleanDevice = deviceInfo || 'Web Browser';
+
   const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
 
   const record = {
     id: requestId,
     name: cleanName,
     reason: cleanReason,
-    ip: ip || 'Unknown',
+    ip: cleanIp,
+    time: `${cleanTime}${tzLabel}`,
+    device: cleanDevice,
     status: 'PENDING', // 'PENDING' | 'APPROVED' | 'REJECTED'
     token: null,
     createdAt: Date.now()
@@ -238,21 +252,22 @@ export async function createAccessRequest({ name, reason, ip }) {
   // Sync to global cloud store for multi-container lambdas
   syncRequestToCloud(record).catch(() => {});
 
-  const bot = botInstance || initTelegramBot();
+  const token = process.env.TELEGRAM_BOT_TOKEN;
   const adminChatIds = await discoverAdminChatIds();
 
   const fallbackApproveUrl = `https://vercel-auto-host.vercel.app/api/auth/approve-link?id=${requestId}&action=approve`;
   const fallbackRejectUrl = `https://vercel-auto-host.vercel.app/api/auth/approve-link?id=${requestId}&action=reject`;
 
-  // Broadcast to Telegram admin(s) if bot is active
-  if (bot && adminChatIds.length > 0) {
-    const alertText =
-      `🔐 *NEW WEBSITE ACCESS REQUEST*\n\n` +
-      `👤 *Visitor Name:* ${cleanName}\n` +
-      `🎯 *Reason for Contact:* ${cleanReason}\n` +
-      `🌐 *Client IP:* \`${ip || 'Unknown'}\`\n` +
-      `⏰ *Time:* ${new Date().toLocaleTimeString()}\n\n` +
-      `👇 *Choose an option to approve or decline access:*`;
+  // Broadcast to Telegram admin(s)
+  if (token && adminChatIds.length > 0) {
+    const alertHtml =
+      `🔐 <b>NEW WEBSITE ACCESS REQUEST</b>\n\n` +
+      `👤 <b>Visitor Name:</b> ${escapeHtml(cleanName)}\n` +
+      `🎯 <b>Reason for Contact:</b> ${escapeHtml(cleanReason)}\n` +
+      `🌐 <b>Client IP:</b> <code>${escapeHtml(cleanIp)}</code>\n` +
+      `⏰ <b>Exact Time:</b> ${escapeHtml(cleanTime)}${escapeHtml(tzLabel)}\n` +
+      `💻 <b>Device / Browser:</b> ${escapeHtml(cleanDevice)}\n\n` +
+      `👇 <b>Choose an option to approve or decline access:</b>`;
 
     const replyMarkup = {
       inline_keyboard: [
@@ -268,10 +283,12 @@ export async function createAccessRequest({ name, reason, ip }) {
 
     for (const adminChatId of adminChatIds) {
       try {
-        await bot.sendMessage(adminChatId, alertText, {
-          parse_mode: 'Markdown',
+        await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+          chat_id: adminChatId,
+          text: alertHtml,
+          parse_mode: 'HTML',
           reply_markup: replyMarkup
-        });
+        }, { timeout: 4000 });
         console.log(`[Telegram Auth Alert]: Sent approval request to admin ${adminChatId}`);
       } catch (sendErr) {
         console.warn(`[Telegram Auth Alert Error to ${adminChatId}]:`, sendErr.message);
@@ -281,6 +298,7 @@ export async function createAccessRequest({ name, reason, ip }) {
 
   return record;
 }
+
 
 /**
  * Returns current status of an access request (sync fallback).

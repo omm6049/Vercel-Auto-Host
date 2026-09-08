@@ -891,6 +891,38 @@ function initAuthGate() {
     }, 1800);
   };
 
+  // Fast background public IP discovery
+  let detectedClientIp = null;
+  (async () => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      const res = await fetch('https://api64.ipify.org?format=json', { signal: controller.signal });
+      clearTimeout(timeoutId);
+      const data = await res.json();
+      if (data && data.ip) detectedClientIp = data.ip;
+    } catch {}
+  })();
+
+  // Device & OS detection
+  const getDeviceInfo = () => {
+    const ua = navigator.userAgent || '';
+    let os = 'Unknown Device';
+    if (ua.includes('Win')) os = 'Windows';
+    else if (ua.includes('Mac')) os = 'macOS';
+    else if (ua.includes('Android')) os = 'Android';
+    else if (ua.includes('iPhone') || ua.includes('iPad')) os = 'iOS';
+    else if (ua.includes('Linux')) os = 'Linux';
+
+    let browser = 'Browser';
+    if (ua.includes('Edg/')) browser = 'Microsoft Edge';
+    else if (ua.includes('Chrome/')) browser = 'Google Chrome';
+    else if (ua.includes('Firefox/')) browser = 'Mozilla Firefox';
+    else if (ua.includes('Safari/') && !ua.includes('Chrome/')) browser = 'Apple Safari';
+
+    return `${os} • ${browser}`;
+  };
+
   // Handle Form Submission
   if (authForm) {
     authForm.addEventListener('submit', async (e) => {
@@ -913,10 +945,26 @@ function initAuthGate() {
       }
 
       try {
+        const now = new Date();
+        const clientTime = now.toLocaleString('en-US', {
+          dateStyle: 'medium',
+          timeStyle: 'medium',
+          hour12: true
+        });
+        const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+        const deviceInfo = getDeviceInfo();
+
         const res = await fetch('/api/auth/request', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, reason })
+          body: JSON.stringify({
+            name,
+            reason,
+            clientIp: detectedClientIp || null,
+            clientTime,
+            clientTimezone,
+            deviceInfo
+          })
         });
 
         const data = await parseJsonResponse(res);
@@ -940,6 +988,7 @@ function initAuthGate() {
       }
     });
   }
+
 
   // Handle Simulate Approval Button (Dev / Testing)
   if (authSimulateApproveBtn) {

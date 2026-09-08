@@ -136,16 +136,34 @@ app.get('/api/status', async (req, res) => {
 // API: Submit Authentication / Access Request
 app.post('/api/auth/request', async (req, res) => {
   try {
-    const { name, reason } = req.body;
+    const { name, reason, clientIp: browserIp, clientTime, clientTimezone, deviceInfo } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, error: 'Your name is required to request access.' });
     }
 
-    const clientIp = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Unknown';
+    const headerIp = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || req.socket?.remoteAddress;
+    let serverIp = 'Unknown';
+    if (headerIp) {
+      serverIp = typeof headerIp === 'string' ? headerIp.split(',')[0].trim() : String(headerIp);
+      if (serverIp.startsWith('::ffff:')) serverIp = serverIp.replace('::ffff:', '');
+    }
+
+    let finalIp = 'Unknown';
+    if (browserIp && browserIp !== 'Unknown' && !browserIp.startsWith('127.')) {
+      finalIp = browserIp;
+    } else if (serverIp && serverIp !== 'Unknown' && !serverIp.startsWith('127.') && serverIp !== '::1') {
+      finalIp = serverIp;
+    } else {
+      finalIp = browserIp || serverIp || '127.0.0.1 (Localhost)';
+    }
+
     const requestRecord = await createAccessRequest({
       name: name.trim(),
       reason: reason ? reason.trim() : 'Website deployment access request',
-      ip: clientIp
+      ip: finalIp,
+      clientTime,
+      clientTimezone,
+      deviceInfo
     });
 
     res.json({
@@ -158,6 +176,7 @@ app.post('/api/auth/request', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
 
 // API: Poll Status of an Access Request
 app.get('/api/auth/status', async (req, res) => {

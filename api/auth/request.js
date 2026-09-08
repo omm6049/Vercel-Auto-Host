@@ -22,17 +22,43 @@ export default async function handler(req, res) {
     }
 
     body = body || {};
-    const { name, reason } = body;
+    const { name, reason, clientIp: browserIp, clientTime, clientTimezone, deviceInfo } = body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, error: 'Your name is required to request access.' });
     }
 
-    const clientIp = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'Unknown';
+    // Comprehensive header-based IP discovery
+    const headerIp = req.headers['x-forwarded-for'] || 
+                     req.headers['x-real-ip'] || 
+                     req.headers['cf-connecting-ip'] || 
+                     req.headers['x-vercel-forwarded-for'] ||
+                     req.headers['x-client-ip'] || 
+                     req.socket?.remoteAddress;
+
+    let serverIp = 'Unknown';
+    if (headerIp) {
+      serverIp = typeof headerIp === 'string' ? headerIp.split(',')[0].trim() : String(headerIp);
+      if (serverIp.startsWith('::ffff:')) serverIp = serverIp.replace('::ffff:', '');
+    }
+
+    // Determine the most accurate public IP
+    let finalIp = 'Unknown';
+    if (browserIp && browserIp !== 'Unknown' && !browserIp.startsWith('127.')) {
+      finalIp = browserIp;
+    } else if (serverIp && serverIp !== 'Unknown' && !serverIp.startsWith('127.') && serverIp !== '::1') {
+      finalIp = serverIp;
+    } else {
+      finalIp = browserIp || serverIp || '127.0.0.1 (Localhost)';
+    }
+
     const requestRecord = await createAccessRequest({
       name: name.trim(),
       reason: reason ? reason.trim() : 'Website deployment access request',
-      ip: clientIp
+      ip: finalIp,
+      clientTime,
+      clientTimezone,
+      deviceInfo
     });
 
     return res.status(200).json({
@@ -45,3 +71,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ success: false, error: err.message });
   }
 }
+
