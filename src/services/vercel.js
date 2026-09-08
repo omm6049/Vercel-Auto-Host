@@ -283,7 +283,20 @@ export function extractZipToVercelFiles(zipBuffer) {
 export function ensureHtmlLinks(htmlContent) {
   let modified = htmlContent;
 
-  // 1. Check & Inject style.css
+  // 1. Check & Inject Responsive Viewport Meta Tag for Mobile/Tablet/PC compatibility
+  const hasViewport = /<meta[^>]+name=["']viewport["'][^>]*>/i.test(modified);
+  if (!hasViewport) {
+    const viewportTag = '\n    <meta name="viewport" content="width=device-width, initial-scale=1.0">';
+    if (/<head[^>]*>/i.test(modified)) {
+      modified = modified.replace(/(<head[^>]*>)/i, `$1${viewportTag}`);
+    } else if (/<html[^>]*>/i.test(modified)) {
+      modified = modified.replace(/(<html[^>]*>)/i, `$1\n<head>${viewportTag}\n</head>`);
+    } else {
+      modified = `<head>${viewportTag}\n</head>\n` + modified;
+    }
+  }
+
+  // 2. Check & Inject style.css
   const hasCssLink = /<link[^>]+href=["'](?:\.\/)?style\.css["'][^>]*>/i.test(modified);
   if (!hasCssLink) {
     const cssTag = '\n    <link rel="stylesheet" href="style.css">';
@@ -296,7 +309,7 @@ export function ensureHtmlLinks(htmlContent) {
     }
   }
 
-  // 2. Check & Inject logic.js
+  // 3. Check & Inject logic.js
   const hasJsScript = /<script[^>]+src=["'](?:\.\/)?logic\.js["'][^>]*>/i.test(modified);
   if (!hasJsScript) {
     const jsTag = '\n    <script src="logic.js"></script>';

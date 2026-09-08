@@ -13,7 +13,135 @@ export const userSessions = new Map();
 // Global deployment history for the dashboard & bot
 export const deploymentHistory = [];
 
+// In-memory visitor access requests and approved session tokens
+export const accessRequests = new Map();
+export const activeSessionTokens = new Set();
+export const registeredAdminChatIds = new Set();
+
+// Pre-load admin chat ID if configured in environment
+if (process.env.TELEGRAM_ADMIN_CHAT_ID) {
+  registeredAdminChatIds.add(Number(process.env.TELEGRAM_ADMIN_CHAT_ID) || process.env.TELEGRAM_ADMIN_CHAT_ID);
+}
+if (process.env.ADMIN_CHAT_ID) {
+  registeredAdminChatIds.add(Number(process.env.ADMIN_CHAT_ID) || process.env.ADMIN_CHAT_ID);
+}
+
 export let botInstance = null;
+
+/**
+ * Creates a new visitor authentication & access request and broadcasts approval buttons to Telegram Admin.
+ */
+export async function createAccessRequest({ name, reason, ip }) {
+  const cleanName = (name || 'Anonymous Visitor').trim();
+  const cleanReason = (reason || 'General inquiry & deployment access').trim();
+  const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+
+  const record = {
+    id: requestId,
+    name: cleanName,
+    reason: cleanReason,
+    ip: ip || 'Unknown',
+    status: 'PENDING', // 'PENDING' | 'APPROVED' | 'REJECTED'
+    token: null,
+    createdAt: Date.now()
+  };
+
+  accessRequests.set(requestId, record);
+
+  const bot = botInstance || initTelegramBot();
+
+  // Broadcast to Telegram admin(s) if bot is active
+  if (bot && registeredAdminChatIds.size > 0) {
+    const alertText =
+      `🔐 *NEW WEBSITE ACCESS REQUEST*\n\n` +
+      `👤 *Visitor Name:* ${cleanName}\n` +
+      `🎯 *Reason for Contact:* ${cleanReason}\n` +
+      `🌐 *Client IP:* \`${ip || 'Unknown'}\`\n` +
+      `⏰ *Time:* ${new Date().toLocaleTimeString()}\n\n` +
+      `👇 *Click below to grant or deny access to the deployment launchpad:*`;
+
+    const replyMarkup = {
+      inline_keyboard: [
+        [
+          { text: '✅ Approve Access', callback_data: `auth_approve:${requestId}` },
+          { text: '❌ Reject Request', callback_data: `auth_reject:${requestId}` }
+        ]
+      ]
+    };
+
+    for (const adminChatId of registeredAdminChatIds) {
+      try {
+        await bot.sendMessage(adminChatId, alertText, {
+          parse_mode: 'Markdown',
+          reply_markup: replyMarkup
+        });
+      } catch (sendErr) {
+        console.warn(`[Telegram Auth Alert Error to ${adminChatId}]:`, sendErr.message);
+      }
+    }
+  } else {
+    console.log(`[Auth Access Request created]: ${requestId} for "${cleanName}". (Awaiting Telegram approval or simulation)`);
+  }
+
+  return record;
+}
+
+/**
+ * Returns current status of an access request.
+ */
+export function getAccessRequestStatus(requestId) {
+  return accessRequests.get(requestId) || null;
+}
+
+/**
+ * Approves an access request, generates a secure session token, and updates status.
+ */
+export function approveAccessRequest(requestId, approvedBy = 'Admin') {
+  const record = accessRequests.get(requestId);
+  if (!record) return null;
+
+  const sessionToken = `tok_${Math.random().toString(36).substring(2)}_${Date.now().toString(36)}`;
+  activeSessionTokens.add(sessionToken);
+
+  record.status = 'APPROVED';
+  record.token = sessionToken;
+  record.approvedBy = approvedBy;
+  record.approvedAt = Date.now();
+
+  accessRequests.set(requestId, record);
+  return record;
+}
+
+/**
+ * Rejects an access request and updates status.
+ */
+export function rejectAccessRequest(requestId, rejectedBy = 'Admin') {
+  const record = accessRequests.get(requestId);
+  if (!record) return null;
+
+  record.status = 'REJECTED';
+  record.rejectedBy = rejectedBy;
+  record.rejectedAt = Date.now();
+
+  accessRequests.set(requestId, record);
+  return record;
+}
+
+/**
+ * Verifies if a session token is active and authorized.
+ */
+export function verifyAccessToken(token) {
+  if (!token) return false;
+  return activeSessionTokens.has(token);
+}
+
+/**
+ * Revokes a session token on logout.
+ */
+export function revokeAccessToken(token) {
+  if (!token) return false;
+  return activeSessionTokens.delete(token);
+}
 
 /**
  * Creates a visual ASCII progress bar
@@ -266,11 +394,69 @@ export async function processIncomingUpdate(update) {
   const bot = botInstance || initTelegramBot();
   if (!bot) return;
 
-  // Handle Callback Queries (e.g. [Skip .env] button)
+  // Handle Callback Queries (e.g. [Approve Access], [Reject Request], [Skip .env])
   if (update.callback_query) {
     const cb = update.callback_query;
     const chatId = cb.message?.chat?.id;
+    const messageId = cb.message?.message_id;
     const data = cb.data;
+
+    // Handle 1-Click Visitor Authentication Approvals
+    if (data && data.startsWith('auth_approve:')) {
+      const requestId = data.split(':')[1];
+      const record = approveAccessRequest(requestId, cb.from?.first_name || 'Admin');
+
+      try {
+        await bot.answerCallbackQuery(cb.id, { text: `✅ Access APPROVED for ${record ? record.name : 'visitor'}!` });
+      } catch {}
+
+      if (chatId && messageId && record) {
+        try {
+          await bot.editMessageText(
+            `✅ *ACCESS REQUEST APPROVED*\n\n` +
+            `👤 *Visitor Name:* ${record.name}\n` +
+            `🎯 *Reason for Contact:* ${record.reason}\n` +
+            `🛡️ *Status:* Granted by ${cb.from?.first_name || 'Admin'} ✅\n` +
+            `🕒 *Approved At:* ${new Date().toLocaleTimeString()}\n\n` +
+            `_Website launchpad is now unlocked for this visitor._`,
+            {
+              chat_id: chatId,
+              message_id: messageId,
+              parse_mode: 'Markdown'
+            }
+          );
+        } catch {}
+      }
+      return;
+    }
+
+    // Handle 1-Click Visitor Authentication Rejections
+    if (data && data.startsWith('auth_reject:')) {
+      const requestId = data.split(':')[1];
+      const record = rejectAccessRequest(requestId, cb.from?.first_name || 'Admin');
+
+      try {
+        await bot.answerCallbackQuery(cb.id, { text: `❌ Access DECLINED for ${record ? record.name : 'visitor'}` });
+      } catch {}
+
+      if (chatId && messageId && record) {
+        try {
+          await bot.editMessageText(
+            `❌ *ACCESS REQUEST DECLINED*\n\n` +
+            `👤 *Visitor Name:* ${record.name}\n` +
+            `🎯 *Reason for Contact:* ${record.reason}\n` +
+            `🚫 *Status:* Rejected by ${cb.from?.first_name || 'Admin'}\n` +
+            `🕒 *Declined At:* ${new Date().toLocaleTimeString()}`,
+            {
+              chat_id: chatId,
+              message_id: messageId,
+              parse_mode: 'Markdown'
+            }
+          );
+        } catch {}
+      }
+      return;
+    }
 
     if (data === 'skip_env' && chatId) {
       const session = userSessions.get(chatId);
@@ -299,6 +485,9 @@ export async function processIncomingUpdate(update) {
   // 1. /start command handler
   if (msg.text && msg.text.startsWith('/start')) {
     const userName = msg.from?.first_name || 'there';
+
+    // Register this chat for instant access approval notifications
+    registeredAdminChatIds.add(chatId);
 
     userSessions.set(chatId, {
       step: 'AWAITING_SOURCE',

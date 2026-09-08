@@ -9,7 +9,12 @@ import {
   botInstance,
   deploymentHistory,
   setBotWebhook,
-  getBotWebhookInfo
+  getBotWebhookInfo,
+  createAccessRequest,
+  getAccessRequestStatus,
+  verifyAccessToken,
+  revokeAccessToken,
+  approveAccessRequest
 } from './services/telegramBot.js';
 import { deployToVercel, verifyVercelCredentials, sanitizeProjectName } from './services/vercel.js';
 
@@ -122,6 +127,92 @@ app.get('/api/status', async (req, res) => {
     },
     totalDeployments: deploymentHistory.length
   });
+});
+
+// =========================================================================
+// Visitor Authentication & Telegram 1-Click Access Request Endpoints
+// =========================================================================
+
+// API: Submit Authentication / Access Request
+app.post('/api/auth/request', async (req, res) => {
+  try {
+    const { name, reason } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, error: 'Your name is required to request access.' });
+    }
+
+    const clientIp = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Unknown';
+    const requestRecord = await createAccessRequest({
+      name: name.trim(),
+      reason: reason ? reason.trim() : 'Website deployment access request',
+      ip: clientIp
+    });
+
+    res.json({
+      success: true,
+      requestId: requestRecord.id,
+      status: requestRecord.status,
+      message: 'Authentication request sent to admin on Telegram.'
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// API: Poll Status of an Access Request
+app.get('/api/auth/status', (req, res) => {
+  const requestId = req.query.id || req.query.requestId;
+  if (!requestId) {
+    return res.status(400).json({ success: false, error: 'requestId parameter is required' });
+  }
+
+  const record = getAccessRequestStatus(requestId);
+  if (!record) {
+    return res.status(404).json({ success: false, error: 'Access request not found or expired' });
+  }
+
+  res.json({
+    success: true,
+    request: {
+      id: record.id,
+      name: record.name,
+      reason: record.reason,
+      status: record.status,
+      token: record.token || null,
+      approvedBy: record.approvedBy || null
+    }
+  });
+});
+
+// API: Verify Session Token
+app.post('/api/auth/verify', (req, res) => {
+  const token = req.body.token || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
+  const isValid = verifyAccessToken(token);
+
+  res.json({
+    success: true,
+    valid: isValid
+  });
+});
+
+// API: Revoke Session Token / Logout
+app.post('/api/auth/logout', (req, res) => {
+  const token = req.body.token || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
+  if (token) {
+    revokeAccessToken(token);
+  }
+  res.json({ success: true, message: 'Logged out successfully' });
+});
+
+// API: Dev / Simulation Instant Approval (Useful for testing / when Telegram bot is offline)
+app.post('/api/auth/simulate-approve', (req, res) => {
+  const { requestId } = req.body;
+  if (!requestId) return res.status(400).json({ success: false, error: 'requestId is required' });
+
+  const record = approveAccessRequest(requestId, 'Simulation Mode');
+  if (!record) return res.status(404).json({ success: false, error: 'Request not found' });
+
+  res.json({ success: true, record });
 });
 
 // API: Deployment History
