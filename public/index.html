@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vercel Auto Host - Telegram Bot & Web Deployment Platform</title>
+  <meta name="description" content="Deploy your HTML, CSS, and JS projects directly to Vercel with real-time percentage progress via Telegram Bot and Web Dashboard.">
+  <link rel="stylesheet" href="style.css">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+  <!-- Ambient background glow effects -->
+  <div class="ambient-glow glow-primary"></div>
+  <div class="ambient-glow glow-secondary"></div>
+  <div class="ambient-glow glow-tertiary"></div>
+
+  <!-- Header Navigation -->
+  <header class="navbar">
+    <div class="nav-container">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 76 65" height="22" width="22" fill="none">
+            <path d="M37.5274 0L75.0548 65H0L37.5274 0Z" fill="#ffffff" />
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">Vercel<span class="gradient-text">AutoHost</span></span>
+          <span class="brand-tag">v1.0</span>
+        </div>
+      </div>
+
+      <div class="nav-status-group">
+        <div class="status-chip" id="botStatusChip">
+          <span class="status-dot pulse-warning" id="botStatusDot"></span>
+          <span class="status-label">Telegram Bot:</span>
+          <span class="status-value" id="botStatusText">Checking...</span>
+        </div>
+        <div class="status-chip" id="vercelStatusChip">
+          <span class="status-dot pulse-warning" id="vercelStatusDot"></span>
+          <span class="status-label">Vercel API:</span>
+          <span class="status-value" id="vercelStatusText">Checking...</span>
+        </div>
+        <div class="status-chip" id="blobStatusChip">
+          <span class="status-dot" id="blobStatusDot"></span>
+          <span class="status-label">Vercel Blob:</span>
+          <span class="status-value" id="blobStatusText">Checking...</span>
+        </div>
+      </div>
+
+      <div class="nav-actions">
+        <a href="#envModal" class="btn btn-glass" id="openEnvGuideBtn">
+          <i data-lucide="key"></i> API Config
+        </a>
+        <a href="#uploaderSection" class="btn btn-primary">
+          <i data-lucide="rocket"></i> Deploy Now
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="main-wrapper">
+    <!-- Hero Section -->
+    <section class="hero-section">
+      <div class="hero-badge">
+        <span class="badge-icon"><i data-lucide="sparkles"></i></span>
+        <span>Auto-connect HTML + CSS + JS to <code>&lt;name&gt;.vercel.app</code></span>
+      </div>
+      <h1 class="hero-title">
+        Host Web Projects Instantly via <br />
+        <span class="gradient-text">Telegram Bot & Web Studio</span>
+      </h1>
+      <p class="hero-subtitle">
+        Upload <code>index.html</code>, <code>style.css</code>, and <code>logic.js</code> one-by-one with real-time percentage progress updates. Our automated engine connects all 3 files and deploys live to Vercel in seconds.
+      </p>
+
+      <!-- Telegram Workflow Infographic Cards -->
+      <div class="workflow-grid">
+        <div class="workflow-card">
+          <div class="step-number">01</div>
+          <div class="step-icon"><i data-lucide="file-code"></i></div>
+          <h3 class="step-title">Send <code>index.html</code></h3>
+          <p class="step-desc">Type <code>/start</code> in Telegram. Bot tracks upload percentage and confirms upload.</p>
+        </div>
+        <div class="workflow-card">
+          <div class="step-number">02</div>
+          <div class="step-icon"><i data-lucide="palette"></i></div>
+          <h3 class="step-title">Send <code>style.css</code></h3>
+          <p class="step-desc">Bot requests stylesheet, monitors chunked progress bar and validates CSS.</p>
+        </div>
+        <div class="workflow-card">
+          <div class="step-number">03</div>
+          <div class="step-icon"><i data-lucide="code-2"></i></div>
+          <h3 class="step-title">Send <code>logic.js</code></h3>
+          <p class="step-desc">Upload client scripts. Bot auto-links CSS & JS inside HTML head and body.</p>
+        </div>
+        <div class="workflow-card highlight-step">
+          <div class="step-number">04</div>
+          <div class="step-icon"><i data-lucide="globe"></i></div>
+          <h3 class="step-title">Choose Website Name</h3>
+          <p class="step-desc">Enter project name & instant live URL is generated: <code>https://&lt;name&gt;.vercel.app</code>!</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Grid: Interactive Studio & Bot Simulator -->
+    <div class="workspace-grid" id="uploaderSection">
+      <!-- Left Column: Web Deploy Studio -->
+      <section class="glass-panel studio-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2 class="panel-title"><i data-lucide="upload-cloud"></i> Web Deployment Studio</h2>
+            <p class="panel-subtitle">Upload the 3 project files directly or load the pre-built demo template</p>
+          </div>
+          <button class="btn btn-sm btn-glass" id="loadSampleBtn">
+            <i data-lucide="wand-2"></i> Load Demo Sample Files
+          </button>
+        </div>
+
+        <form id="deploymentForm" class="deploy-form">
+          <!-- Step 1: index.html dropzone -->
+          <div class="file-dropzone-group">
+            <div class="dropzone-label">
+              <span class="slot-badge">Step 1</span>
+              <strong>index.html</strong>
+              <span class="required-tag">Required</span>
+            </div>
+            <div class="dropzone" id="htmlDropzone">
+              <input type="file" id="htmlFileInput" accept=".html,.htm" class="file-input" />
+              <div class="dropzone-content">
+                <i data-lucide="file-text" class="dropzone-icon"></i>
+                <div class="dropzone-text">
+                  <span class="dropzone-primary-text" id="htmlFileName">Drop index.html here or browse</span>
+                  <span class="dropzone-sub-text" id="htmlFileSize">Main HTML entrypoint</span>
+                </div>
+              </div>
+              <div class="file-progress-bar" id="htmlProgressBar"></div>
+            </div>
+          </div>
+
+          <!-- Step 2: style.css dropzone -->
+          <div class="file-dropzone-group">
+            <div class="dropzone-label">
+              <span class="slot-badge">Step 2</span>
+              <strong>style.css</strong>
+              <span class="required-tag">Styles</span>
+            </div>
+            <div class="dropzone" id="cssDropzone">
+              <input type="file" id="cssFileInput" accept=".css" class="file-input" />
+              <div class="dropzone-content">
+                <i data-lucide="file-code" class="dropzone-icon"></i>
+                <div class="dropzone-text">
+                  <span class="dropzone-primary-text" id="cssFileName">Drop style.css here or browse</span>
+                  <span class="dropzone-sub-text" id="cssFileSize">Custom CSS stylesheet</span>
+                </div>
+              </div>
+              <div class="file-progress-bar" id="cssProgressBar"></div>
+            </div>
+          </div>
+
+          <!-- Step 3: logic.js dropzone -->
+          <div class="file-dropzone-group">
+            <div class="dropzone-label">
+              <span class="slot-badge">Step 3</span>
+              <strong>logic.js</strong>
+              <span class="required-tag">Scripts</span>
+            </div>
+            <div class="dropzone" id="jsDropzone">
+              <input type="file" id="jsFileInput" accept=".js" class="file-input" />
+              <div class="dropzone-content">
+                <i data-lucide="terminal" class="dropzone-icon"></i>
+                <div class="dropzone-text">
+                  <span class="dropzone-primary-text" id="jsFileName">Drop logic.js here or browse</span>
+                  <span class="dropzone-sub-text" id="jsFileSize">JavaScript logic & interactivity</span>
+                </div>
+              </div>
+              <div class="file-progress-bar" id="jsProgressBar"></div>
+            </div>
+          </div>
+
+          <!-- Step 4: Website Name Input -->
+          <div class="form-group">
+            <label for="projectNameInput" class="form-label">
+              <span class="slot-badge">Step 4</span>
+              <strong>Desired Website Name</strong>
+            </label>
+            <div class="input-prefix-wrapper">
+              <span class="input-prefix">https://</span>
+              <input
+                type="text"
+                id="projectNameInput"
+                class="form-input"
+                placeholder="my-cool-website"
+                required
+                pattern="[a-zA-Z0-9-]+"
+              />
+              <span class="input-suffix">.vercel.app</span>
+            </div>
+            <span class="form-hint">Only letters, numbers, and hyphens. Max 50 characters.</span>
+          </div>
+
+          <!-- Auto Link Protection Badge -->
+          <div class="info-alert">
+            <i data-lucide="shield-check" class="alert-icon"></i>
+            <div>
+              <strong>Auto-Linking Engine Active:</strong>
+              <span>We automatically inject <code>&lt;link rel="stylesheet" href="style.css"&gt;</code> and <code>&lt;script src="logic.js"&gt;&lt;/script&gt;</code> into <code>index.html</code> so your site works seamlessly immediately!</span>
+            </div>
+          </div>
+
+          <!-- Submit Button -->
+          <button type="submit" class="btn btn-primary btn-block btn-lg" id="deploySubmitBtn">
+            <i data-lucide="send"></i>
+            <span>Deploy to Vercel</span>
+          </button>
+        </form>
+
+        <!-- Live Deployment Status Box -->
+        <div id="deployStatusContainer" class="deploy-status-box hidden">
+          <div class="status-box-header">
+            <div class="spinner" id="deploySpinner"></div>
+            <h4 id="deployStatusTitle">Deploying website...</h4>
+          </div>
+          <div class="overall-progress-track">
+            <div class="overall-progress-bar" id="overallProgressBar" style="width: 0%"></div>
+          </div>
+          <p id="deployStatusDesc" class="deploy-status-desc">Connecting components and uploading files to Vercel API...</p>
+
+          <!-- Result card when done -->
+          <div id="deployResultCard" class="result-card hidden">
+            <div class="result-success-badge">
+              <i data-lucide="check-circle-2"></i> Deployment Succeeded!
+            </div>
+            <div class="result-urls">
+              <div class="url-row">
+                <span class="url-label">Production URL:</span>
+                <a href="#" target="_blank" id="resultCanonicalUrl" class="url-link">https://my-site.vercel.app</a>
+                <button class="btn btn-xs btn-glass copy-btn" data-clipboard-target="#resultCanonicalUrl">
+                  <i data-lucide="copy"></i>
+                </button>
+              </div>
+              <div class="url-row">
+                <span class="url-label">Direct Preview:</span>
+                <a href="#" target="_blank" id="resultDirectUrl" class="url-link secondary-url">https://vercel.com/...</a>
+              </div>
+            </div>
+            <div class="result-actions">
+              <a href="#" target="_blank" id="openLiveSiteBtn" class="btn btn-primary btn-sm">
+                <i data-lucide="external-link"></i> Open Live Website
+              </a>
+              <button class="btn btn-secondary btn-sm" id="previewInSandboxBtn">
+                <i data-lucide="layout"></i> Preview in Sandbox
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Column: Interactive Telegram Bot Simulation & Live Log -->
+      <section class="glass-panel bot-sim-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2 class="panel-title"><i data-lucide="bot"></i> Telegram Bot Live Experience</h2>
+            <p class="panel-subtitle">Interactive Telegram workflow simulation & real-time bot status</p>
+          </div>
+          <span class="badge-pill" id="telegramModeBadge">Active Server</span>
+        </div>
+
+        <!-- Telegram Chat UI Container -->
+        <div class="telegram-chat-mockup">
+          <div class="telegram-chat-header">
+            <div class="bot-avatar">
+              <i data-lucide="bot"></i>
+            </div>
+            <div class="bot-info">
+              <span class="bot-name">Vercel Auto Host Bot</span>
+              <span class="bot-status">bot • ready to host</span>
+            </div>
+          </div>
+
+          <div class="telegram-messages-container" id="telegramChatContainer">
+            <!-- Simulated Messages -->
+            <div class="tg-bubble tg-bot">
+              <div class="tg-text">
+                👋 <strong>Hello there! Welcome to Vercel Auto Host Bot.</strong><br><br>
+                I will help you deploy your website to <strong>Vercel</strong> in 4 simple steps:<br>
+                1️⃣ Send <code>index.html</code><br>
+                2️⃣ Send <code>style.css</code><br>
+                3️⃣ Send <code>logic.js</code><br>
+                4️⃣ Enter your desired Website Name<br><br>
+                📌 <strong>Step 1/4:</strong> Please send your <strong>index.html</strong> file.
+              </div>
+              <span class="tg-time">12:00 PM</span>
+            </div>
+          </div>
+
+          <div class="telegram-chat-input-bar">
+            <button class="tg-icon-btn" id="simUploadBtn" title="Simulate File Upload">
+              <i data-lucide="paperclip"></i>
+            </button>
+            <input
+              type="text"
+              id="tgSimInput"
+              class="tg-input"
+              placeholder="Type /start, website name, or message..."
+            />
+            <button class="tg-send-btn" id="tgSimSendBtn">
+              <i data-lucide="send"></i>
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Deployment History Section -->
+    <section class="glass-panel history-section">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <h2 class="panel-title"><i data-lucide="history"></i> Deployment History</h2>
+          <p class="panel-subtitle">All live projects hosted via Telegram Bot and Web Studio</p>
+        </div>
+        <button class="btn btn-sm btn-glass" id="refreshHistoryBtn">
+          <i data-lucide="refresh-cw"></i> Refresh List
+        </button>
+      </div>
+
+      <div class="history-table-container">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>Website Name</th>
+              <th>Live Vercel URL</th>
+              <th>Source</th>
+              <th>Date Deployed</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="historyTableBody">
+            <tr class="empty-row">
+              <td colspan="5">
+                <div class="empty-state">
+                  <i data-lucide="inbox"></i>
+                  <p>No deployments yet. Send <code>/start</code> in Telegram or deploy via Web Studio above!</p>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Live Sandbox Preview Modal -->
+  <div class="modal-overlay hidden" id="previewModal">
+    <div class="modal-container">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3 class="modal-title" id="previewModalTitle">Website Preview</h3>
+          <span class="modal-url" id="previewModalUrl">https://my-site.vercel.app</span>
+        </div>
+        <div class="modal-header-actions">
+          <a href="#" target="_blank" id="previewModalExternalLink" class="btn btn-xs btn-glass">
+            <i data-lucide="external-link"></i> Open Tab
+          </a>
+          <button class="btn-close" id="closePreviewModalBtn">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <iframe id="previewIframe" src="about:blank" class="preview-iframe"></iframe>
+      </div>
+    </div>
+  </div>
+
+  <!-- API & Credentials Modal -->
+  <div class="modal-overlay hidden" id="envModal">
+    <div class="modal-container modal-medium">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3 class="modal-title"><i data-lucide="sliders"></i> Environment Configuration</h3>
+          <span class="modal-subtitle">Setup instructions for .env file</span>
+        </div>
+        <button class="btn-close" id="closeEnvModalBtn">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body env-modal-body">
+        <div class="env-item">
+          <div class="env-item-header">
+            <strong>1. Telegram Bot Token</strong>
+            <span class="env-key">TELEGRAM_BOT_TOKEN</span>
+          </div>
+          <p>Create a bot via <strong>@BotFather</strong> on Telegram, type <code>/newbot</code>, and copy the API token into your <code>.env</code> file.</p>
+        </div>
+
+        <div class="env-item">
+          <div class="env-item-header">
+            <strong>2. Vercel Access Token</strong>
+            <span class="env-key">VERCEL_TOKEN</span>
+          </div>
+          <p>Generate a Personal Access Token from your <a href="https://vercel.com/account/tokens" target="_blank" class="text-link">Vercel Account Settings &rarr; Tokens</a> page with Full Account or Deployment access.</p>
+        </div>
+
+        <div class="env-item">
+          <div class="env-item-header">
+            <strong>3. Vercel Blob Read-Write Token (Optional)</strong>
+            <span class="env-key">BLOB_READ_WRITE_TOKEN</span>
+          </div>
+          <p>Create a Blob Storage in your Vercel Dashboard under Storage &rarr; Blob to enable cloud backups of uploaded files.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toastNotification" class="toast hidden">
+    <i data-lucide="info" class="toast-icon"></i>
+    <span id="toastMessage">Notification message</span>
+  </div>
+
+  <!-- Application Logic -->
+  <script src="app.js"></script>
+</body>
+</html>

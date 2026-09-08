@@ -1,0 +1,29 @@
+{
+  "name": "vercel-auto-host",
+  "version": "1.0.0",
+  "description": "Telegram Bot & Web Platform to automatically host HTML, CSS, and JS projects directly to Vercel with real-time upload progress tracking.",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "keywords": [
+    "telegram-bot",
+    "vercel",
+    "auto-host",
+    "web-hosting",
+    "blob-storage"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@vercel/blob": "^0.27.1",
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
