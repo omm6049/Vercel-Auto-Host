@@ -3,7 +3,7 @@ import axios from 'axios';
 import { deployToVercel, sanitizeProjectName } from './vercel.js';
 
 // In-memory conversation state per chat
-const userSessions = new Map();
+export const userSessions = new Map();
 
 // Global deployment history for the dashboard & bot
 export const deploymentHistory = [];
@@ -80,39 +80,27 @@ async function downloadTelegramFileWithProgress(bot, chatId, fileId, fileName) {
 }
 
 /**
- * Initializes the Telegram bot in either Polling mode (Local) or Webhook mode (Vercel Serverless)
+ * Direct Async Update Handler for Webhook & Serverless Execution
  */
-export function initTelegramBot() {
+export async function processIncomingUpdate(update) {
+  if (!update) return;
+
+  const msg = update.message;
+  if (!msg) return;
+
+  const chatId = msg.chat.id;
   const token = process.env.TELEGRAM_BOT_TOKEN;
-
-  if (!token || token === 'your_telegram_bot_token_here') {
-    console.warn('⚠️ [Telegram Bot]: TELEGRAM_BOT_TOKEN is not configured. Telegram bot skipped.');
-    return null;
+  if (!token) {
+    console.error('TELEGRAM_BOT_TOKEN missing in environment.');
+    return;
   }
 
-  // Determine mode: Serverless (Vercel) vs Long Polling (Local machine)
-  const isVercelServerless = process.env.VERCEL === '1' || process.env.USE_WEBHOOK === 'true';
-  const usePolling = !isVercelServerless;
+  const bot = botInstance || initTelegramBot();
+  if (!bot) return;
 
-  if (botInstance) {
-    return botInstance;
-  }
-
-  const bot = new TelegramBot(token, { polling: usePolling });
-  botInstance = bot;
-
-  console.log(`🤖 [Telegram Bot]: Bot initialized in ${usePolling ? 'Long Polling (Local)' : 'Webhook (Serverless)'} mode.`);
-
-  if (usePolling) {
-    bot.on('polling_error', (error) => {
-      console.error('⚠️ [Telegram Polling Error]:', error.message || error);
-    });
-  }
-
-  // /start command handler
-  bot.onText(/\/start/, async (msg) => {
-    const chatId = msg.chat.id;
-    const userName = msg.from.first_name || 'there';
+  // 1. /start command handler
+  if (msg.text && msg.text.startsWith('/start')) {
+    const userName = msg.from?.first_name || 'there';
 
     userSessions.set(chatId, {
       step: 'AWAITING_HTML',
@@ -134,22 +122,37 @@ export function initTelegramBot() {
       `📌 *Step 1/4:* Please send your *index.html* file as a document.`,
       { parse_mode: 'Markdown' }
     );
-  });
+    return;
+  }
 
-  // /cancel command handler
-  bot.onText(/\/cancel/, async (msg) => {
-    const chatId = msg.chat.id;
+  // 2. /cancel command handler
+  if (msg.text && msg.text.startsWith('/cancel')) {
     userSessions.delete(chatId);
     await bot.sendMessage(
       chatId,
       '❌ *Session cancelled.*\nType /start whenever you want to host a new website!',
       { parse_mode: 'Markdown' }
     );
-  });
+    return;
+  }
 
-  // /status command handler
-  bot.onText(/\/status/, async (msg) => {
-    const chatId = msg.chat.id;
+  // 3. /help command handler
+  if (msg.text && msg.text.startsWith('/help')) {
+    await bot.sendMessage(
+      chatId,
+      `📖 *Vercel Auto Host Bot Help*\n\n` +
+      `• /start - Start deploying a website (HTML -> CSS -> JS -> Name)\n` +
+      `• /cancel - Reset and cancel current upload\n` +
+      `• /status - View your recent deployments\n` +
+      `• /help - Show this guide\n\n` +
+      `💡 *Tip:* We automatically connect \`style.css\` and \`logic.js\` with your \`index.html\` so your site works instantly on \`<name>.vercel.app\`!`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  // 4. /status command handler
+  if (msg.text && msg.text.startsWith('/status')) {
     const userDeployments = deploymentHistory.filter((d) => d.chatId === chatId);
 
     if (userDeployments.length === 0) {
@@ -167,26 +170,11 @@ export function initTelegramBot() {
     });
 
     await bot.sendMessage(chatId, report, { parse_mode: 'Markdown', disable_web_page_preview: true });
-  });
+    return;
+  }
 
-  // /help command handler
-  bot.onText(/\/help/, async (msg) => {
-    const chatId = msg.chat.id;
-    await bot.sendMessage(
-      chatId,
-      `📖 *Vercel Auto Host Bot Help*\n\n` +
-      `• /start - Start deploying a website (HTML -> CSS -> JS -> Name)\n` +
-      `• /cancel - Reset and cancel current upload\n` +
-      `• /status - View your recent deployments\n` +
-      `• /help - Show this guide\n\n` +
-      `💡 *Tip:* We automatically connect \`style.css\` and \`logic.js\` with your \`index.html\` so your site works instantly on \`<name>.vercel.app\`!`,
-      { parse_mode: 'Markdown' }
-    );
-  });
-
-  // Handle document file uploads
-  bot.on('document', async (msg) => {
-    const chatId = msg.chat.id;
+  // 5. Handle document file uploads
+  if (msg.document) {
     const session = userSessions.get(chatId);
 
     if (!session) {
@@ -290,13 +278,10 @@ export function initTelegramBot() {
       }
       return;
     }
-  });
+  }
 
-  // Handle plain text messages (for website name input)
-  bot.on('message', async (msg) => {
-    if (msg.document || (msg.text && msg.text.startsWith('/'))) return;
-
-    const chatId = msg.chat.id;
+  // 6. Handle plain text messages (for website name input)
+  if (msg.text) {
     const session = userSessions.get(chatId);
 
     if (!session) {
@@ -409,7 +394,43 @@ export function initTelegramBot() {
         );
       }
     }
-  });
+  }
+}
+
+/**
+ * Initializes the Telegram bot in either Polling mode (Local) or Webhook mode (Vercel Serverless)
+ */
+export function initTelegramBot() {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!token || token === 'your_telegram_bot_token_here') {
+    console.warn('⚠️ [Telegram Bot]: TELEGRAM_BOT_TOKEN is not configured. Telegram bot skipped.');
+    return null;
+  }
+
+  // Determine mode: Serverless (Vercel) vs Long Polling (Local machine)
+  const isVercelServerless = process.env.VERCEL === '1' || process.env.USE_WEBHOOK === 'true';
+  const usePolling = !isVercelServerless;
+
+  if (botInstance) {
+    return botInstance;
+  }
+
+  const bot = new TelegramBot(token, { polling: usePolling });
+  botInstance = bot;
+
+  console.log(`🤖 [Telegram Bot]: Bot initialized in ${usePolling ? 'Long Polling (Local)' : 'Webhook (Serverless)'} mode.`);
+
+  if (usePolling) {
+    bot.on('polling_error', (error) => {
+      console.error('⚠️ [Telegram Polling Error]:', error.message || error);
+    });
+
+    // Wire up listeners for polling mode
+    bot.on('message', async (msg) => {
+      await processIncomingUpdate({ message: msg });
+    });
+  }
 
   return bot;
 }
