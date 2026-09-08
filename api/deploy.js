@@ -7,12 +7,26 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { projectName, htmlContent, cssContent, jsContent } = req.body || {};
+    const {
+      projectName,
+      htmlContent,
+      cssContent,
+      jsContent,
+      zipBase64,
+      files,
+      envContent,
+      envVariables
+    } = req.body || {};
 
-    if (!htmlContent) {
+    let zipBuffer = null;
+    if (zipBase64) {
+      zipBuffer = Buffer.from(zipBase64, 'base64');
+    }
+
+    if (!zipBuffer && !htmlContent && !files) {
       return res.status(400).json({
         success: false,
-        error: 'index.html content is required.'
+        error: 'Either a .ZIP file or index.html content is required.'
       });
     }
 
@@ -20,9 +34,13 @@ export default async function handler(req, res) {
 
     const result = await deployToVercel({
       projectName: cleanName,
+      zipBuffer,
+      files,
       htmlContent,
       cssContent,
-      jsContent
+      jsContent,
+      envContent,
+      envVariables
     });
 
     const record = {
@@ -30,6 +48,8 @@ export default async function handler(req, res) {
       projectName: result.projectName,
       canonicalUrl: result.canonicalUrl,
       directUrl: result.directUrl,
+      fileCount: result.fileCount,
+      envCount: result.envCount,
       createdAt: result.createdAt,
       source: 'Web Dashboard (Vercel Serverless)'
     };

@@ -71,41 +71,41 @@
     <section class="hero-section">
       <div class="hero-badge">
         <span class="badge-icon"><i data-lucide="sparkles"></i></span>
-        <span>Auto-connect HTML + CSS + JS to <code>&lt;name&gt;.vercel.app</code></span>
+        <span>Auto-extract ZIP + .env + Deploy to <code>&lt;name&gt;.vercel.app</code></span>
       </div>
       <h1 class="hero-title">
-        Host Web Projects Instantly via <br />
+        Host Complete Web Projects via <br />
         <span class="gradient-text">Telegram Bot & Web Studio</span>
       </h1>
       <p class="hero-subtitle">
-        Upload <code>index.html</code>, <code>style.css</code>, and <code>logic.js</code> one-by-one with real-time percentage progress updates. Our automated engine connects all 3 files and deploys live to Vercel in seconds.
+        Upload complete <strong>.ZIP archives</strong> or single <code>index.html</code> files. Configure <strong>.env environment variables</strong> automatically via Vercel's REST API and get an instant live website in seconds.
       </p>
 
       <!-- Telegram Workflow Infographic Cards -->
       <div class="workflow-grid">
         <div class="workflow-card">
           <div class="step-number">01</div>
-          <div class="step-icon"><i data-lucide="file-code"></i></div>
-          <h3 class="step-title">Send <code>index.html</code></h3>
-          <p class="step-desc">Type <code>/start</code> in Telegram. Bot tracks upload percentage and confirms upload.</p>
+          <div class="step-icon"><i data-lucide="folder-archive"></i></div>
+          <h3 class="step-title">Upload <code>.ZIP</code> or Code</h3>
+          <p class="step-desc">Send a full ZIP project or individual files. Bot auto-extracts folders, assets & HTML.</p>
         </div>
         <div class="workflow-card">
           <div class="step-number">02</div>
-          <div class="step-icon"><i data-lucide="palette"></i></div>
-          <h3 class="step-title">Send <code>style.css</code></h3>
-          <p class="step-desc">Bot requests stylesheet, monitors chunked progress bar and validates CSS.</p>
+          <div class="step-icon"><i data-lucide="key-round"></i></div>
+          <h3 class="step-title">Add <code>.env</code> Secrets</h3>
+          <p class="step-desc">Upload <code>.env</code> or type variables. Bot configures Vercel Environment API securely.</p>
         </div>
         <div class="workflow-card">
           <div class="step-number">03</div>
-          <div class="step-icon"><i data-lucide="code-2"></i></div>
-          <h3 class="step-title">Send <code>logic.js</code></h3>
-          <p class="step-desc">Upload client scripts. Bot auto-links CSS & JS inside HTML head and body.</p>
+          <div class="step-icon"><i data-lucide="sparkles"></i></div>
+          <h3 class="step-title">Choose Website Name</h3>
+          <p class="step-desc">Pick your custom name (e.g. <code>my-portfolio</code>). Vercel builds & assigns edge domain.</p>
         </div>
         <div class="workflow-card highlight-step">
           <div class="step-number">04</div>
           <div class="step-icon"><i data-lucide="globe"></i></div>
-          <h3 class="step-title">Choose Website Name</h3>
-          <p class="step-desc">Enter project name & instant live URL is generated: <code>https://&lt;name&gt;.vercel.app</code>!</p>
+          <h3 class="step-title">Instant Live Website!</h3>
+          <p class="step-desc">Live on <code>https://&lt;name&gt;.vercel.app</code> + direct edge preview URLs with 100% uptime!</p>
         </div>
       </div>
     </section>
@@ -117,79 +117,141 @@
         <div class="panel-header">
           <div class="panel-title-group">
             <h2 class="panel-title"><i data-lucide="upload-cloud"></i> Web Deployment Studio</h2>
-            <p class="panel-subtitle">Upload the 3 project files directly or load the pre-built demo template</p>
+            <p class="panel-subtitle">Upload a full project .ZIP archive or individual code files</p>
           </div>
           <button class="btn btn-sm btn-glass" id="loadSampleBtn">
             <i data-lucide="wand-2"></i> Load Demo Sample Files
           </button>
         </div>
 
+        <!-- Upload Mode Switcher -->
+        <div class="upload-mode-switcher">
+          <button type="button" class="mode-tab active" id="tabZipMode">
+            <i data-lucide="folder-archive"></i>
+            <span>Full .ZIP Archive</span>
+            <span class="zip-badge-pill">Recommended</span>
+          </button>
+          <button type="button" class="mode-tab" id="tabClassicMode">
+            <i data-lucide="files"></i>
+            <span>3-File Mode (HTML/CSS/JS)</span>
+          </button>
+        </div>
+
         <form id="deploymentForm" class="deploy-form">
-          <!-- Step 1: index.html dropzone -->
-          <div class="file-dropzone-group">
+          <!-- Mode A: ZIP Dropzone -->
+          <div id="zipUploadSection" class="file-dropzone-group">
             <div class="dropzone-label">
               <span class="slot-badge">Step 1</span>
-              <strong>index.html</strong>
-              <span class="required-tag">Required</span>
+              <strong>Project .ZIP Archive</strong>
+              <span class="required-tag">Must contain index.html</span>
             </div>
-            <div class="dropzone" id="htmlDropzone">
-              <input type="file" id="htmlFileInput" accept=".html,.htm" class="file-input" />
+            <div class="dropzone" id="zipDropzone">
+              <input type="file" id="zipFileInput" accept=".zip,application/zip" class="file-input" />
               <div class="dropzone-content">
-                <i data-lucide="file-text" class="dropzone-icon"></i>
+                <i data-lucide="folder-archive" class="dropzone-icon"></i>
                 <div class="dropzone-text">
-                  <span class="dropzone-primary-text" id="htmlFileName">Drop index.html here or browse</span>
-                  <span class="dropzone-sub-text" id="htmlFileSize">Main HTML entrypoint</span>
+                  <span class="dropzone-primary-text" id="zipFileName">Drop full project .ZIP archive here or browse</span>
+                  <span class="dropzone-sub-text" id="zipFileSize">Auto-extracts index.html, CSS, JS, images & assets</span>
                 </div>
               </div>
-              <div class="file-progress-bar" id="htmlProgressBar"></div>
+              <div class="file-progress-bar" id="zipProgressBar"></div>
             </div>
           </div>
 
-          <!-- Step 2: style.css dropzone -->
-          <div class="file-dropzone-group">
-            <div class="dropzone-label">
-              <span class="slot-badge">Step 2</span>
-              <strong>style.css</strong>
-              <span class="required-tag">Styles</span>
-            </div>
-            <div class="dropzone" id="cssDropzone">
-              <input type="file" id="cssFileInput" accept=".css" class="file-input" />
-              <div class="dropzone-content">
-                <i data-lucide="file-code" class="dropzone-icon"></i>
-                <div class="dropzone-text">
-                  <span class="dropzone-primary-text" id="cssFileName">Drop style.css here or browse</span>
-                  <span class="dropzone-sub-text" id="cssFileSize">Custom CSS stylesheet</span>
-                </div>
+          <!-- Mode B: Classic 3-File Dropzones (Hidden when in ZIP mode) -->
+          <div id="classicUploadSection" class="hidden">
+            <!-- Step 1: index.html dropzone -->
+            <div class="file-dropzone-group">
+              <div class="dropzone-label">
+                <span class="slot-badge">Step 1</span>
+                <strong>index.html</strong>
+                <span class="required-tag">Required</span>
               </div>
-              <div class="file-progress-bar" id="cssProgressBar"></div>
+              <div class="dropzone" id="htmlDropzone">
+                <input type="file" id="htmlFileInput" accept=".html,.htm" class="file-input" />
+                <div class="dropzone-content">
+                  <i data-lucide="file-text" class="dropzone-icon"></i>
+                  <div class="dropzone-text">
+                    <span class="dropzone-primary-text" id="htmlFileName">Drop index.html here or browse</span>
+                    <span class="dropzone-sub-text" id="htmlFileSize">Main HTML entrypoint</span>
+                  </div>
+                </div>
+                <div class="file-progress-bar" id="htmlProgressBar"></div>
+              </div>
+            </div>
+
+            <!-- Step 2: style.css dropzone -->
+            <div class="file-dropzone-group">
+              <div class="dropzone-label">
+                <span class="slot-badge">Step 2</span>
+                <strong>style.css</strong>
+                <span class="required-tag">Styles</span>
+              </div>
+              <div class="dropzone" id="cssDropzone">
+                <input type="file" id="cssFileInput" accept=".css" class="file-input" />
+                <div class="dropzone-content">
+                  <i data-lucide="file-code" class="dropzone-icon"></i>
+                  <div class="dropzone-text">
+                    <span class="dropzone-primary-text" id="cssFileName">Drop style.css here or browse</span>
+                    <span class="dropzone-sub-text" id="cssFileSize">Custom CSS stylesheet</span>
+                  </div>
+                </div>
+                <div class="file-progress-bar" id="cssProgressBar"></div>
+              </div>
+            </div>
+
+            <!-- Step 3: logic.js dropzone -->
+            <div class="file-dropzone-group">
+              <div class="dropzone-label">
+                <span class="slot-badge">Step 3</span>
+                <strong>logic.js</strong>
+                <span class="required-tag">Scripts</span>
+              </div>
+              <div class="dropzone" id="jsDropzone">
+                <input type="file" id="jsFileInput" accept=".js" class="file-input" />
+                <div class="dropzone-content">
+                  <i data-lucide="terminal" class="dropzone-icon"></i>
+                  <div class="dropzone-text">
+                    <span class="dropzone-primary-text" id="jsFileName">Drop logic.js here or browse</span>
+                    <span class="dropzone-sub-text" id="jsFileSize">JavaScript logic & interactivity</span>
+                  </div>
+                </div>
+                <div class="file-progress-bar" id="jsProgressBar"></div>
+              </div>
             </div>
           </div>
 
-          <!-- Step 3: logic.js dropzone -->
-          <div class="file-dropzone-group">
-            <div class="dropzone-label">
-              <span class="slot-badge">Step 3</span>
-              <strong>logic.js</strong>
-              <span class="required-tag">Scripts</span>
-            </div>
-            <div class="dropzone" id="jsDropzone">
-              <input type="file" id="jsFileInput" accept=".js" class="file-input" />
-              <div class="dropzone-content">
-                <i data-lucide="terminal" class="dropzone-icon"></i>
-                <div class="dropzone-text">
-                  <span class="dropzone-primary-text" id="jsFileName">Drop logic.js here or browse</span>
-                  <span class="dropzone-sub-text" id="jsFileSize">JavaScript logic & interactivity</span>
-                </div>
+          <!-- Optional Step: Environment Variables (.env) -->
+          <div class="env-config-box">
+            <div class="env-box-header" id="envToggleHeader">
+              <div class="env-box-title">
+                <i data-lucide="key-round"></i>
+                <span>Environment Variables (.env)</span>
+                <span class="slot-badge">Optional</span>
               </div>
-              <div class="file-progress-bar" id="jsProgressBar"></div>
+              <span class="env-box-subtitle" id="envStatusSummary">Click to configure</span>
+            </div>
+            <div id="envInputContainer" class="hidden" style="margin-top: 10px;">
+              <textarea
+                id="envTextInput"
+                class="env-textarea"
+                placeholder="API_KEY=your_key_here&#10;DATABASE_URL=mongodb+srv://...&#10;NEXT_PUBLIC_APP_NAME=MySite"
+              ></textarea>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
+                <span style="font-size: 0.75rem; color: var(--text-muted);">Auto-configured into Vercel Project Environment</span>
+                <label class="btn btn-xs btn-glass" style="cursor: pointer;">
+                  <i data-lucide="upload"></i> Upload .env File
+                  <input type="file" id="envFileInput" accept=".env,.txt" style="display: none;" />
+                </label>
+              </div>
             </div>
           </div>
 
           <!-- Step 4: Website Name Input -->
           <div class="form-group">
             <label for="projectNameInput" class="form-label">
-              <span class="slot-badge">Step 4</span>
-              <strong>Desired Website Name</strong>
+              <span class="slot-badge">Project Name</span>
+              <strong>Desired Website Link Name</strong>
             </label>
             <div class="input-prefix-wrapper">
               <span class="input-prefix">https://</span>
@@ -210,8 +272,8 @@
           <div class="info-alert">
             <i data-lucide="shield-check" class="alert-icon"></i>
             <div>
-              <strong>Auto-Linking Engine Active:</strong>
-              <span>We automatically inject <code>&lt;link rel="stylesheet" href="style.css"&gt;</code> and <code>&lt;script src="logic.js"&gt;&lt;/script&gt;</code> into <code>index.html</code> so your site works seamlessly immediately!</span>
+              <strong>Vercel Auto Host Engine:</strong>
+              <span>Full project assets, nested subfolders, images, styles, and scripts will be automatically packaged and hosted directly on Vercel's global Edge CDN.</span>
             </div>
           </div>
 

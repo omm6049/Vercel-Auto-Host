@@ -23,15 +23,15 @@ const rootDir = path.resolve(__dirname, '..');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Setup Multer memory storage for web file uploads
+// Setup Multer memory storage for web file uploads (supporting zip, env, and code files)
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB per file
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB per file
 });
 
 app.use(cors());
-app.use(express.json({ limit: '20mb' }));
-app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Serve static web dashboard
 app.use(express.static(path.join(rootDir, 'public')));
@@ -132,10 +132,12 @@ app.get('/api/history', (req, res) => {
   });
 });
 
-// API: Web Direct Deployment
+// API: Web Direct Deployment (Supports ZIP archive, .env files, and individual files)
 app.post(
   '/api/deploy',
   upload.fields([
+    { name: 'zipFile', maxCount: 1 },
+    { name: 'envFile', maxCount: 1 },
     { name: 'htmlFile', maxCount: 1 },
     { name: 'cssFile', maxCount: 1 },
     { name: 'jsFile', maxCount: 1 }
@@ -146,7 +148,15 @@ app.post(
       let htmlContent = req.body.htmlContent || '';
       let cssContent = req.body.cssContent || '';
       let jsContent = req.body.jsContent || '';
+      let envContent = req.body.envContent || '';
+      let zipBuffer = null;
 
+      if (req.files?.zipFile?.[0]) {
+        zipBuffer = req.files.zipFile[0].buffer;
+      }
+      if (req.files?.envFile?.[0]) {
+        envContent = req.files.envFile[0].buffer.toString('utf-8');
+      }
       if (req.files?.htmlFile?.[0]) {
         htmlContent = req.files.htmlFile[0].buffer.toString('utf-8');
       }
@@ -157,10 +167,10 @@ app.post(
         jsContent = req.files.jsFile[0].buffer.toString('utf-8');
       }
 
-      if (!htmlContent) {
+      if (!zipBuffer && !htmlContent && !req.body.files) {
         return res.status(400).json({
           success: false,
-          error: 'index.html content is required.'
+          error: 'Either a .ZIP file or index.html content is required.'
         });
       }
 
@@ -168,9 +178,13 @@ app.post(
 
       const result = await deployToVercel({
         projectName: cleanName,
+        zipBuffer,
+        files: req.body.files,
         htmlContent,
         cssContent,
-        jsContent
+        jsContent,
+        envContent,
+        envVariables: req.body.envVariables
       });
 
       const record = {
@@ -178,6 +192,8 @@ app.post(
         projectName: result.projectName,
         canonicalUrl: result.canonicalUrl,
         directUrl: result.directUrl,
+        fileCount: result.fileCount,
+        envCount: result.envCount,
         createdAt: result.createdAt,
         source: 'Web Dashboard'
       };

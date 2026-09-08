@@ -1,6 +1,11 @@
 import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
-import { deployToVercel, sanitizeProjectName } from './vercel.js';
+import {
+  deployToVercel,
+  sanitizeProjectName,
+  extractZipToVercelFiles,
+  parseEnvFileContent
+} from './vercel.js';
 
 // In-memory conversation state per chat
 export const userSessions = new Map();
@@ -26,21 +31,20 @@ function createProgressBar(percent) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Downloads a file from Telegram with chunked percentage progress updates
+ * Downloads a text file from Telegram with percentage progress updates
  */
 async function downloadTelegramFileWithProgress(bot, chatId, fileId, fileName) {
   const progressMsg = await bot.sendMessage(
     chatId,
-    `📥 *Uploading ${fileName}...*\nProgress: ${createProgressBar(10)}`,
+    `📥 *Uploading ${fileName}...*\nProgress: ${createProgressBar(20)}`,
     { parse_mode: 'Markdown' }
   );
 
   const fileLink = await bot.getFileLink(fileId);
 
-  // Progressive steps for visual feedback
-  const progressSteps = [25, 50, 75, 90, 100];
+  const progressSteps = [35, 65, 90, 100];
   for (const step of progressSteps.slice(0, -1)) {
-    await sleep(200);
+    await sleep(150);
     try {
       await bot.editMessageText(
         `📥 *Uploading ${fileName}...*\nProgress: ${createProgressBar(step)}`,
@@ -50,33 +54,207 @@ async function downloadTelegramFileWithProgress(bot, chatId, fileId, fileName) {
           parse_mode: 'Markdown'
         }
       );
-    } catch {
-      // Ignore edit rate-limit errors
-    }
+    } catch {}
   }
 
-  // Fetch actual file content as utf-8 string
   const response = await axios.get(fileLink, {
     responseType: 'text',
     transformResponse: [(data) => data]
   });
   const fileContent = response.data;
 
-  // Final 100% update & success confirmation
   try {
     await bot.editMessageText(
-      `📥 *Uploading ${fileName}...*\nProgress: ${createProgressBar(100)}\n\n✅ *File Uploaded successfully!*`,
+      `📥 *Uploading ${fileName}...*\nProgress: ${createProgressBar(100)}\n\n✅ *File uploaded successfully!*`,
       {
         chat_id: chatId,
         message_id: progressMsg.message_id,
         parse_mode: 'Markdown'
       }
     );
-  } catch {
-    // Ignore edit errors
-  }
+  } catch {}
 
   return fileContent;
+}
+
+/**
+ * Downloads binary buffer (e.g. .zip archive) from Telegram
+ */
+async function downloadTelegramBufferWithProgress(bot, chatId, fileId, fileName) {
+  const progressMsg = await bot.sendMessage(
+    chatId,
+    `📥 *Uploading ${fileName}...*\nProgress: ${createProgressBar(20)}`,
+    { parse_mode: 'Markdown' }
+  );
+
+  const fileLink = await bot.getFileLink(fileId);
+
+  const progressSteps = [40, 75, 95, 100];
+  for (const step of progressSteps.slice(0, -1)) {
+    await sleep(150);
+    try {
+      await bot.editMessageText(
+        `📥 *Uploading ${fileName}...*\nProgress: ${createProgressBar(step)}`,
+        {
+          chat_id: chatId,
+          message_id: progressMsg.message_id,
+          parse_mode: 'Markdown'
+        }
+      );
+    } catch {}
+  }
+
+  const response = await axios.get(fileLink, {
+    responseType: 'arraybuffer',
+    timeout: 45000
+  });
+  const buffer = Buffer.from(response.data);
+
+  try {
+    await bot.editMessageText(
+      `📥 *Uploading ${fileName}...*\nProgress: ${createProgressBar(100)}\n\n✅ *Archive uploaded successfully!*`,
+      {
+        chat_id: chatId,
+        message_id: progressMsg.message_id,
+        parse_mode: 'Markdown'
+      }
+    );
+  } catch {}
+
+  return buffer;
+}
+
+/**
+ * Prompts user for environment variables step
+ */
+async function askEnvStep(bot, chatId, summaryText) {
+  await sleep(250);
+  await bot.sendMessage(
+    chatId,
+    `${summaryText}\n\n` +
+    `📌 *Next Step: Environment Variables (.env)*\n` +
+    `• Send a \`.env\` file as an attachment\n` +
+    `• Or paste \`KEY=VALUE\` pairs directly in chat\n` +
+    `• Or tap the button below / type \`skip\` to proceed without env variables.`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '⏭️ Skip .env (No Variables)', callback_data: 'skip_env' }]
+        ]
+      }
+    }
+  );
+}
+
+/**
+ * Prompts user for website name step
+ */
+async function askNameStep(bot, chatId, summaryText = '') {
+  await sleep(250);
+  await bot.sendMessage(
+    chatId,
+    `${summaryText ? summaryText + '\n\n' : ''}` +
+    `📌 *Final Step: Website Name*\n` +
+    `What *Website Name* do you want for your site?\n` +
+    `*(e.g., \`my-portfolio\`, \`awesome-shop\`, \`crypto-app\`)*\n\n` +
+    `Your live site will be deployed at:\n` +
+    `👉 \`https://<website-name>.vercel.app\``,
+    { parse_mode: 'Markdown' }
+  );
+}
+
+/**
+ * Executes deployment to Vercel and sends live links
+ */
+async function executeDeployment(bot, chatId, session, rawName) {
+  const sanitized = sanitizeProjectName(rawName);
+
+  if (!sanitized || sanitized.length < 2) {
+    await bot.sendMessage(
+      chatId,
+      '⚠️ Please provide a valid website name with at least 2 characters (e.g. `my-project`).',
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  session.step = 'DEPLOYING';
+  session.projectName = sanitized;
+
+  const deployingMsg = await bot.sendMessage(
+    chatId,
+    `⏳ *Deploying \`${sanitized}\` to Vercel...*\n` +
+    `⚙️ Configuring project & environment variables...\n` +
+    `🚀 Packaging files and publishing to Vercel Edge CDN...`,
+    { parse_mode: 'Markdown' }
+  );
+
+  try {
+    const result = await deployToVercel({
+      projectName: sanitized,
+      files: session.files,
+      zipBuffer: session.zipBuffer,
+      htmlContent: session.htmlContent,
+      cssContent: session.cssContent,
+      jsContent: session.jsContent,
+      envContent: session.envContent,
+      envVariables: session.envVariables
+    });
+
+    // Store in deployment history
+    const record = {
+      id: result.deploymentId,
+      projectName: result.projectName,
+      canonicalUrl: result.canonicalUrl,
+      directUrl: result.directUrl,
+      createdAt: result.createdAt,
+      source: 'Telegram Bot',
+      fileCount: result.fileCount,
+      envCount: result.envCount,
+      chatId
+    };
+    deploymentHistory.push(record);
+
+    // Delete user session on success
+    userSessions.delete(chatId);
+
+    // Success message
+    await bot.editMessageText(
+      `🎉 *Website Successfully Deployed to Vercel!*\n\n` +
+      `🏷️ *Project Name:* \`${result.projectName}\`\n` +
+      `📦 *Files Deployed:* \`${result.fileCount || '3'} files\`\n` +
+      `🔐 *Env Variables:* \`${result.envCount || 0} configured\`\n\n` +
+      `🌐 *Live Website URL:*\n👉 [${result.canonicalUrl}](${result.canonicalUrl})\n\n` +
+      `⚡ *Direct Deployment Link:*\n👉 [${result.directUrl}](${result.directUrl})\n\n` +
+      `🚀 Tap the button below to test your live website!`,
+      {
+        chat_id: chatId,
+        message_id: deployingMsg.message_id,
+        parse_mode: 'Markdown',
+        disable_web_page_preview: false,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🌐 Open Live Website', url: result.canonicalUrl }],
+            [{ text: '⚡ Direct Preview', url: result.directUrl }]
+          ]
+        }
+      }
+    );
+  } catch (err) {
+    console.error('Deployment error:', err);
+    session.step = 'AWAITING_NAME';
+
+    await bot.editMessageText(
+      `❌ *Deployment Error:*\n${err.message}\n\n` +
+      `Please enter another website name or check your \`.env\` VERCEL_TOKEN credentials.`,
+      {
+        chat_id: chatId,
+        message_id: deployingMsg.message_id,
+        parse_mode: 'Markdown'
+      }
+    );
+  }
 }
 
 /**
@@ -84,6 +262,29 @@ async function downloadTelegramFileWithProgress(bot, chatId, fileId, fileName) {
  */
 export async function processIncomingUpdate(update) {
   if (!update) return;
+
+  const bot = botInstance || initTelegramBot();
+  if (!bot) return;
+
+  // Handle Callback Queries (e.g. [Skip .env] button)
+  if (update.callback_query) {
+    const cb = update.callback_query;
+    const chatId = cb.message?.chat?.id;
+    const data = cb.data;
+
+    if (data === 'skip_env' && chatId) {
+      const session = userSessions.get(chatId);
+      if (session && session.step === 'AWAITING_ENV') {
+        session.step = 'AWAITING_NAME';
+        session.envContent = null;
+        try {
+          await bot.answerCallbackQuery(cb.id, { text: 'Skipped .env configuration' });
+        } catch {}
+        await askNameStep(bot, chatId, '⏭️ *Skipped .env configuration.*');
+      }
+    }
+    return;
+  }
 
   const msg = update.message;
   if (!msg) return;
@@ -95,18 +296,19 @@ export async function processIncomingUpdate(update) {
     return;
   }
 
-  const bot = botInstance || initTelegramBot();
-  if (!bot) return;
-
   // 1. /start command handler
   if (msg.text && msg.text.startsWith('/start')) {
     const userName = msg.from?.first_name || 'there';
 
     userSessions.set(chatId, {
-      step: 'AWAITING_HTML',
+      step: 'AWAITING_SOURCE',
       htmlContent: null,
       cssContent: null,
       jsContent: null,
+      zipBuffer: null,
+      files: null,
+      envContent: null,
+      envVariables: null,
       projectName: null,
       timestamp: Date.now()
     });
@@ -114,12 +316,10 @@ export async function processIncomingUpdate(update) {
     await bot.sendMessage(
       chatId,
       `👋 *Hello ${userName}! Welcome to Vercel Auto Host Bot.*\n\n` +
-      `I will help you deploy your website to *Vercel* in 4 simple steps:\n` +
-      `1️⃣ Send \`index.html\`\n` +
-      `2️⃣ Send \`style.css\`\n` +
-      `3️⃣ Send \`logic.js\`\n` +
-      `4️⃣ Enter your desired Website Name\n\n` +
-      `📌 *Step 1/4:* Please send your *index.html* file as a document.`,
+      `Deploy your website to *Vercel* in 3 easy steps:\n\n` +
+      `📦 *Option 1 (Recommended):* Send a \`.zip\` archive containing your full project (with \`index.html\` entrypoint).\n` +
+      `📄 *Option 2:* Send individual files (\`index.html\` ➔ \`style.css\` ➔ \`logic.js\`).\n\n` +
+      `📌 *Step 1:* Please upload your *.ZIP file* or *index.html* document to begin!`,
       { parse_mode: 'Markdown' }
     );
     return;
@@ -141,11 +341,11 @@ export async function processIncomingUpdate(update) {
     await bot.sendMessage(
       chatId,
       `📖 *Vercel Auto Host Bot Help*\n\n` +
-      `• /start - Start deploying a website (HTML -> CSS -> JS -> Name)\n` +
-      `• /cancel - Reset and cancel current upload\n` +
-      `• /status - View your recent deployments\n` +
-      `• /help - Show this guide\n\n` +
-      `💡 *Tip:* We automatically connect \`style.css\` and \`logic.js\` with your \`index.html\` so your site works instantly on \`<name>.vercel.app\`!`,
+      `• *Upload .ZIP:* Send any \`.zip\` project file. We auto-extract all folders, images, and HTML/CSS/JS.\n` +
+      `• *Environment Variables:* Send \`.env\` or paste \`KEY=VALUE\` to configure Vercel variables automatically.\n` +
+      `• /start - Start a new deployment\n` +
+      `• /cancel - Reset current session\n` +
+      `• /status - View recent deployments`,
       { parse_mode: 'Markdown' }
     );
     return;
@@ -175,114 +375,135 @@ export async function processIncomingUpdate(update) {
 
   // 5. Handle document file uploads
   if (msg.document) {
-    const session = userSessions.get(chatId);
+    let session = userSessions.get(chatId);
 
     if (!session) {
-      await bot.sendMessage(
-        chatId,
-        '💡 Please type /start first to begin hosting your website.',
-        { parse_mode: 'Markdown' }
-      );
-      return;
+      session = {
+        step: 'AWAITING_SOURCE',
+        htmlContent: null,
+        cssContent: null,
+        jsContent: null,
+        zipBuffer: null,
+        files: null,
+        envContent: null,
+        envVariables: null,
+        projectName: null,
+        timestamp: Date.now()
+      };
+      userSessions.set(chatId, session);
     }
 
     const doc = msg.document;
     const docName = (doc.file_name || '').toLowerCase();
 
-    // Step 1: index.html
-    if (session.step === 'AWAITING_HTML') {
-      if (!docName.endsWith('.html') && !docName.endsWith('.htm')) {
-        await bot.sendMessage(
-          chatId,
-          '⚠️ *Invalid file format.* Please send an HTML file (e.g. `index.html`).',
-          { parse_mode: 'Markdown' }
-        );
-        return;
-      }
-
+    // Case A: ZIP Upload in AWAITING_SOURCE
+    if (docName.endsWith('.zip') || doc.mime_type === 'application/zip' || doc.mime_type === 'application/x-zip-compressed') {
       try {
-        session.htmlContent = await downloadTelegramFileWithProgress(bot, chatId, doc.file_id, doc.file_name || 'index.html');
-        session.step = 'AWAITING_CSS';
+        const buffer = await downloadTelegramBufferWithProgress(bot, chatId, doc.file_id, doc.file_name || 'project.zip');
+        const extracted = extractZipToVercelFiles(buffer);
 
-        await sleep(250);
-        await bot.sendMessage(
-          chatId,
-          `📌 *Step 2/4:* Great! Now please upload your *style.css* file.`,
-          { parse_mode: 'Markdown' }
-        );
+        if (!extracted.hasIndexHtml) {
+          await bot.sendMessage(
+            chatId,
+            '⚠️ *Missing index.html:* Your ZIP archive must contain an `index.html` entrypoint file. Please check and re-upload your .zip file.',
+            { parse_mode: 'Markdown' }
+          );
+          return;
+        }
+
+        session.zipBuffer = buffer;
+        session.files = extracted.files;
+        session.step = 'AWAITING_ENV';
+
+        const summary = `✨ *ZIP extracted successfully!* (${extracted.fileCount} files found, \`index.html\` verified ✅)`;
+        await askEnvStep(bot, chatId, summary);
       } catch (err) {
-        console.error('File download error:', err);
-        await bot.sendMessage(chatId, `❌ Failed to download file: ${err.message}. Please try again.`);
+        console.error('ZIP extraction error:', err);
+        await bot.sendMessage(chatId, `❌ Failed to process ZIP archive: ${err.message}. Please try again.`);
       }
       return;
     }
 
-    // Step 2: style.css
-    if (session.step === 'AWAITING_CSS') {
-      if (!docName.endsWith('.css')) {
-        await bot.sendMessage(
-          chatId,
-          '⚠️ *Invalid file format.* Please send a CSS file (e.g. `style.css`).',
-          { parse_mode: 'Markdown' }
-        );
-        return;
-      }
-
+    // Case B: .env file upload during AWAITING_ENV
+    if (session.step === 'AWAITING_ENV') {
       try {
-        session.cssContent = await downloadTelegramFileWithProgress(bot, chatId, doc.file_id, doc.file_name || 'style.css');
-        session.step = 'AWAITING_JS';
-
-        await sleep(250);
-        await bot.sendMessage(
-          chatId,
-          `📌 *Step 3/4:* Excellent! Now please upload your *logic.js* file.`,
-          { parse_mode: 'Markdown' }
-        );
-      } catch (err) {
-        console.error('File download error:', err);
-        await bot.sendMessage(chatId, `❌ Failed to download file: ${err.message}. Please try again.`);
-      }
-      return;
-    }
-
-    // Step 3: logic.js
-    if (session.step === 'AWAITING_JS') {
-      if (!docName.endsWith('.js')) {
-        await bot.sendMessage(
-          chatId,
-          '⚠️ *Invalid file format.* Please send a JavaScript file (e.g. `logic.js`).',
-          { parse_mode: 'Markdown' }
-        );
-        return;
-      }
-
-      try {
-        session.jsContent = await downloadTelegramFileWithProgress(bot, chatId, doc.file_id, doc.file_name || 'logic.js');
+        const envText = await downloadTelegramFileWithProgress(bot, chatId, doc.file_id, doc.file_name || '.env');
+        const parsed = parseEnvFileContent(envText);
+        session.envContent = envText;
+        session.envVariables = parsed;
         session.step = 'AWAITING_NAME';
 
-        await sleep(250);
-        await bot.sendMessage(
-          chatId,
-          `✨ *All 3 files uploaded successfully!*\n` +
-          `• \`index.html\` ✅\n` +
-          `• \`style.css\` ✅\n` +
-          `• \`logic.js\` ✅\n\n` +
-          `📌 *Step 4/4:* What *Website Name* do you want for your site?\n` +
-          `*(e.g., \`my-portfolio\`, \`awesome-shop\`, \`crypto-hub\`)*\n\n` +
-          `Your site will be accessible at: \`https://<website-name>.vercel.app\``,
-          { parse_mode: 'Markdown' }
-        );
+        const count = Object.keys(parsed).length;
+        const summary = `🔐 *Configured ${count} environment variable${count === 1 ? '' : 's'} from \`${doc.file_name || '.env'}\`!* ✅`;
+        await askNameStep(bot, chatId, summary);
       } catch (err) {
-        console.error('File download error:', err);
-        await bot.sendMessage(chatId, `❌ Failed to download file: ${err.message}. Please try again.`);
+        console.error('Env download error:', err);
+        await bot.sendMessage(chatId, `❌ Failed to process .env file: ${err.message}.`);
       }
       return;
+    }
+
+    // Case C: Single-file step: index.html
+    if (session.step === 'AWAITING_SOURCE' || session.step === 'AWAITING_HTML') {
+      if (docName.endsWith('.html') || docName.endsWith('.htm')) {
+        try {
+          session.htmlContent = await downloadTelegramFileWithProgress(bot, chatId, doc.file_id, doc.file_name || 'index.html');
+          session.step = 'AWAITING_CSS';
+
+          await sleep(250);
+          await bot.sendMessage(
+            chatId,
+            `📌 *Step 2/4:* Great! Now please upload your *style.css* file (or type \`skip\` if none).`,
+            { parse_mode: 'Markdown' }
+          );
+        } catch (err) {
+          await bot.sendMessage(chatId, `❌ Failed to download file: ${err.message}`);
+        }
+        return;
+      }
+    }
+
+    // Case D: Single-file step: style.css
+    if (session.step === 'AWAITING_CSS') {
+      if (docName.endsWith('.css')) {
+        try {
+          session.cssContent = await downloadTelegramFileWithProgress(bot, chatId, doc.file_id, doc.file_name || 'style.css');
+          session.step = 'AWAITING_JS';
+
+          await sleep(250);
+          await bot.sendMessage(
+            chatId,
+            `📌 *Step 3/4:* Excellent! Now please upload your *logic.js* file (or type \`skip\` if none).`,
+            { parse_mode: 'Markdown' }
+          );
+        } catch (err) {
+          await bot.sendMessage(chatId, `❌ Failed to download file: ${err.message}`);
+        }
+        return;
+      }
+    }
+
+    // Case E: Single-file step: logic.js
+    if (session.step === 'AWAITING_JS') {
+      if (docName.endsWith('.js')) {
+        try {
+          session.jsContent = await downloadTelegramFileWithProgress(bot, chatId, doc.file_id, doc.file_name || 'logic.js');
+          session.step = 'AWAITING_ENV';
+
+          const summary = `✨ *HTML, CSS, and JS files uploaded successfully!* ✅`;
+          await askEnvStep(bot, chatId, summary);
+        } catch (err) {
+          await bot.sendMessage(chatId, `❌ Failed to download file: ${err.message}`);
+        }
+        return;
+      }
     }
   }
 
-  // 6. Handle plain text messages (for website name input)
+  // 6. Handle plain text messages
   if (msg.text) {
     const session = userSessions.get(chatId);
+    const text = msg.text.trim();
 
     if (!session) {
       await bot.sendMessage(
@@ -293,106 +514,69 @@ export async function processIncomingUpdate(update) {
       return;
     }
 
-    if (session.step === 'AWAITING_HTML') {
-      await bot.sendMessage(chatId, '📌 Please send your *index.html* file as an attachment/document.', { parse_mode: 'Markdown' });
+    if (session.step === 'AWAITING_SOURCE' || session.step === 'AWAITING_HTML') {
+      await bot.sendMessage(
+        chatId,
+        '📌 Please upload your *.ZIP file* or *index.html* file as an attachment to get started.',
+        { parse_mode: 'Markdown' }
+      );
       return;
     }
 
     if (session.step === 'AWAITING_CSS') {
-      await bot.sendMessage(chatId, '📌 Please send your *style.css* file as an attachment/document.', { parse_mode: 'Markdown' });
+      if (text.toLowerCase() === 'skip' || text.toLowerCase() === '/skip') {
+        session.cssContent = '';
+        session.step = 'AWAITING_JS';
+        await bot.sendMessage(chatId, '📌 Skipped CSS. Now please upload your *logic.js* file (or type `skip`).', { parse_mode: 'Markdown' });
+      } else {
+        await bot.sendMessage(chatId, '📌 Please send your *style.css* file as an attachment (or type `skip`).', { parse_mode: 'Markdown' });
+      }
       return;
     }
 
     if (session.step === 'AWAITING_JS') {
-      await bot.sendMessage(chatId, '📌 Please send your *logic.js* file as an attachment/document.', { parse_mode: 'Markdown' });
+      if (text.toLowerCase() === 'skip' || text.toLowerCase() === '/skip') {
+        session.jsContent = '';
+        session.step = 'AWAITING_ENV';
+        await askEnvStep(bot, chatId, '⏭️ Skipped JS.');
+      } else {
+        await bot.sendMessage(chatId, '📌 Please send your *logic.js* file as an attachment (or type `skip`).', { parse_mode: 'Markdown' });
+      }
       return;
     }
 
-    // Step 4: Website Name processing & deployment
-    if (session.step === 'AWAITING_NAME') {
-      const rawName = msg.text.trim();
-      const sanitized = sanitizeProjectName(rawName);
-
-      if (!sanitized || sanitized.length < 2) {
-        await bot.sendMessage(
-          chatId,
-          '⚠️ Please provide a valid website name with at least 2 letters (e.g. `my-project`).',
-          { parse_mode: 'Markdown' }
-        );
+    // Step: AWAITING_ENV (User typed 'skip' or pasted KEY=VALUE pairs)
+    if (session.step === 'AWAITING_ENV') {
+      if (text.toLowerCase() === 'skip' || text.toLowerCase() === '/skip' || text.toLowerCase() === 'none') {
+        session.step = 'AWAITING_NAME';
+        session.envContent = null;
+        await askNameStep(bot, chatId, '⏭️ *Skipped .env configuration.*');
         return;
       }
 
-      session.step = 'DEPLOYING';
-      session.projectName = sanitized;
-
-      const deployingMsg = await bot.sendMessage(
-        chatId,
-        `⏳ *Connecting files & deploying \`${sanitized}\` to Vercel...*\n` +
-        `🔗 Auto-linking \`style.css\` & \`logic.js\` with \`index.html\`...`,
-        { parse_mode: 'Markdown' }
-      );
-
-      try {
-        const result = await deployToVercel({
-          projectName: sanitized,
-          htmlContent: session.htmlContent,
-          cssContent: session.cssContent,
-          jsContent: session.jsContent
-        });
-
-        // Store in deployment history
-        const record = {
-          id: result.deploymentId,
-          projectName: result.projectName,
-          canonicalUrl: result.canonicalUrl,
-          directUrl: result.directUrl,
-          createdAt: result.createdAt,
-          source: 'Telegram Bot',
-          chatId
-        };
-        deploymentHistory.push(record);
-
-        // Delete user session on success
-        userSessions.delete(chatId);
-
-        // Success message
-        await bot.editMessageText(
-          `🎉 *Website Successfully Deployed to Vercel!*\n\n` +
-          `🏷️ *Project Name:* \`${result.projectName}\`\n` +
-          `🌐 *Live Website URL:*\n👉 [${result.canonicalUrl}](${result.canonicalUrl})\n\n` +
-          `⚡ *Direct Deployment Link:*\n👉 [${result.directUrl}](${result.directUrl})\n\n` +
-          `✨ *Connected Components:*\n` +
-          `• \`index.html\` (Root Entrypoint)\n` +
-          `• \`style.css\` (Styles Linked)\n` +
-          `• \`logic.js\` (Scripts Linked)\n\n` +
-          `🚀 Tap the link above to test your live website!`,
-          {
-            chat_id: chatId,
-            message_id: deployingMsg.message_id,
-            parse_mode: 'Markdown',
-            disable_web_page_preview: false,
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: '🌐 Open Website', url: result.canonicalUrl }],
-                [{ text: '⚡ Direct Preview', url: result.directUrl }]
-              ]
-            }
-          }
-        );
-      } catch (err) {
-        console.error('Deployment error:', err);
+      if (text.includes('=')) {
+        const parsed = parseEnvFileContent(text);
+        session.envContent = text;
+        session.envVariables = parsed;
         session.step = 'AWAITING_NAME';
 
-        await bot.editMessageText(
-          `❌ *Deployment Error:*\n${err.message}\n\n` +
-          `Please enter another website name or check your \`.env\` VERCEL_TOKEN credentials.`,
-          {
-            chat_id: chatId,
-            message_id: deployingMsg.message_id,
-            parse_mode: 'Markdown'
-          }
-        );
+        const count = Object.keys(parsed).length;
+        const summary = `🔐 *Configured ${count} environment variable${count === 1 ? '' : 's'}!* ✅`;
+        await askNameStep(bot, chatId, summary);
+        return;
       }
+
+      await bot.sendMessage(
+        chatId,
+        '💡 Send a `.env` file, paste `KEY=VALUE` pairs, or type `skip` if not needed.',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    // Final Step: Website Name processing & deployment
+    if (session.step === 'AWAITING_NAME') {
+      await executeDeployment(bot, chatId, session, text);
     }
   }
 }
@@ -426,9 +610,12 @@ export function initTelegramBot() {
       console.error('⚠️ [Telegram Polling Error]:', error.message || error);
     });
 
-    // Wire up listeners for polling mode
     bot.on('message', async (msg) => {
       await processIncomingUpdate({ message: msg });
+    });
+
+    bot.on('callback_query', async (query) => {
+      await processIncomingUpdate({ callback_query: query });
     });
   }
 
@@ -463,3 +650,4 @@ export async function getBotWebhookInfo() {
     return { ok: false, error: err.message };
   }
 }
+

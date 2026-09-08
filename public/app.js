@@ -4,18 +4,21 @@
 
 // Application State
 const appState = {
+  uploadMode: 'ZIP', // 'ZIP' or 'CLASSIC'
+  zipFile: null,
+  envFile: null,
+  envContent: '',
   htmlFile: null,
   htmlContent: '',
   cssFile: null,
   cssContent: '',
   jsFile: null,
   jsContent: '',
-  botSimStep: 'AWAITING_HTML',
+  botSimStep: 'AWAITING_SOURCE',
   botSimData: {
-    html: null,
-    css: null,
-    js: null,
-    name: null
+    type: 'zip',
+    name: null,
+    envCount: 0
   }
 };
 
@@ -27,7 +30,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   initStatusPolling();
+  initModeSwitcher();
   initDropzones();
+  initEnvSection();
   initFormHandler();
   initSampleLoader();
   initTelegramSimulator();
@@ -123,15 +128,130 @@ function formatBytes(bytes, decimals = 1) {
 }
 
 /**
- * Sets up drag & drop functionality for the 3 slots
+ * Handles Tab Switching between ZIP mode and Classic 3-file mode
+ */
+function initModeSwitcher() {
+  const tabZip = document.getElementById('tabZipMode');
+  const tabClassic = document.getElementById('tabClassicMode');
+  const zipSection = document.getElementById('zipUploadSection');
+  const classicSection = document.getElementById('classicUploadSection');
+
+  if (!tabZip || !tabClassic) return;
+
+  tabZip.addEventListener('click', () => {
+    appState.uploadMode = 'ZIP';
+    tabZip.classList.add('active');
+    tabClassic.classList.remove('active');
+    zipSection.classList.remove('hidden');
+    classicSection.classList.add('hidden');
+  });
+
+  tabClassic.addEventListener('click', () => {
+    appState.uploadMode = 'CLASSIC';
+    tabClassic.classList.add('active');
+    tabZip.classList.remove('active');
+    classicSection.classList.remove('hidden');
+    zipSection.classList.add('hidden');
+  });
+}
+
+/**
+ * Handles Environment Variables (.env) drawer & file upload
+ */
+function initEnvSection() {
+  const header = document.getElementById('envToggleHeader');
+  const container = document.getElementById('envInputContainer');
+  const textarea = document.getElementById('envTextInput');
+  const envFileInput = document.getElementById('envFileInput');
+  const summary = document.getElementById('envStatusSummary');
+
+  if (!header || !container) return;
+
+  header.addEventListener('click', () => {
+    container.classList.toggle('hidden');
+  });
+
+  if (textarea) {
+    textarea.addEventListener('input', () => {
+      appState.envContent = textarea.value;
+      const lines = textarea.value.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#') && l.includes('='));
+      summary.textContent = lines.length > 0 ? `${lines.length} variable${lines.length === 1 ? '' : 's'} set` : 'Click to configure';
+    });
+  }
+
+  if (envFileInput) {
+    envFileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        const file = e.target.files[0];
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          appState.envContent = evt.target.result;
+          if (textarea) textarea.value = evt.target.result;
+          const lines = evt.target.result.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#') && l.includes('='));
+          summary.textContent = `${lines.length} variable${lines.length === 1 ? '' : 's'} loaded from ${file.name}`;
+          showToast(`Loaded ${file.name} successfully!`);
+          container.classList.remove('hidden');
+        };
+        reader.readAsText(file);
+      }
+    });
+  }
+}
+
+/**
+ * Sets up drag & drop functionality for ZIP and individual slots
  */
 function initDropzones() {
+  // ZIP Dropzone Setup
+  const zipDropzone = document.getElementById('zipDropzone');
+  const zipInput = document.getElementById('zipFileInput');
+  const zipName = document.getElementById('zipFileName');
+  const zipSize = document.getElementById('zipFileSize');
+  const zipBar = document.getElementById('zipProgressBar');
+
+  if (zipDropzone && zipInput) {
+    const handleZip = (file) => {
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith('.zip')) {
+        showToast('Please upload a .ZIP archive file.', true);
+        return;
+      }
+
+      zipBar.style.width = '100%';
+      appState.zipFile = file;
+      zipDropzone.classList.add('file-loaded');
+      zipName.textContent = file.name;
+      zipSize.textContent = `${formatBytes(file.size)} • ZIP Archive ready for auto-extraction`;
+      showToast(`Loaded ${file.name} successfully!`);
+    };
+
+    zipInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) handleZip(e.target.files[0]);
+    });
+
+    zipDropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      zipDropzone.classList.add('dragover');
+    });
+    zipDropzone.addEventListener('dragleave', () => {
+      zipDropzone.classList.remove('dragover');
+    });
+    zipDropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      zipDropzone.classList.remove('dragover');
+      if (e.dataTransfer.files.length > 0) handleZip(e.dataTransfer.files[0]);
+    });
+  }
+
+  // Individual Slots Setup
   const setupDropzone = (dropzoneId, inputId, nameId, sizeId, barId, type) => {
     const dropzone = document.getElementById(dropzoneId);
     const input = document.getElementById(inputId);
     const nameLabel = document.getElementById(nameId);
     const sizeLabel = document.getElementById(sizeId);
     const progressBar = document.getElementById(barId);
+
+    if (!dropzone || !input) return;
 
     const handleFile = (file) => {
       if (!file) return;
@@ -181,12 +301,12 @@ function initDropzones() {
     });
 
     dropzone.addEventListener('dragleave', () => {
-      dropzone.classList.remove('dragover');
+      dropzone.classList.remove('dragleave');
     });
 
     dropzone.addEventListener('drop', (e) => {
       e.preventDefault();
-      dropzone.classList.remove('dragover');
+      dropzone.classList.remove('dragleave');
       if (e.dataTransfer.files.length > 0) {
         handleFile(e.dataTransfer.files[0]);
       }
@@ -210,6 +330,10 @@ function initSampleLoader() {
       loadBtn.disabled = true;
       loadBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Loading...';
 
+      // Switch to Classic mode to show populated files
+      const tabClassic = document.getElementById('tabClassicMode');
+      if (tabClassic) tabClassic.click();
+
       // Sample HTML
       const sampleHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -224,7 +348,7 @@ function initSampleLoader() {
     <div class="card">
       <div class="badge">🚀 Deployed via Vercel Auto Host</div>
       <h1>Hello from <span class="highlight">Vercel Auto Host</span>!</h1>
-      <p>This page was automatically assembled from index.html, style.css, and logic.js!</p>
+      <p>This page was automatically assembled from index.html, style.css, and logic.js with Vercel Environment Variables support!</p>
       <div class="counter-box">
         <button id="counterBtn" class="btn">⚡ Click Me (JS Interactivity)</button>
         <span id="counterVal">0</span> clicks
@@ -306,17 +430,17 @@ console.log('✅ logic.js executing seamlessly on Vercel deployment!');`;
       appState.jsContent = sampleJs;
 
       // Update UI
-      document.getElementById('htmlDropzone').classList.add('file-loaded');
+      document.getElementById('htmlDropzone')?.classList.add('file-loaded');
       document.getElementById('htmlFileName').textContent = 'index.html (Sample Demo)';
       document.getElementById('htmlFileSize').textContent = `${formatBytes(sampleHtml.length)} • Ready`;
       document.getElementById('htmlProgressBar').style.width = '100%';
 
-      document.getElementById('cssDropzone').classList.add('file-loaded');
+      document.getElementById('cssDropzone')?.classList.add('file-loaded');
       document.getElementById('cssFileName').textContent = 'style.css (Sample Demo)';
       document.getElementById('cssFileSize').textContent = `${formatBytes(sampleCss.length)} • Ready`;
       document.getElementById('cssProgressBar').style.width = '100%';
 
-      document.getElementById('jsDropzone').classList.add('file-loaded');
+      document.getElementById('jsDropzone')?.classList.add('file-loaded');
       document.getElementById('jsFileName').textContent = 'logic.js (Sample Demo)';
       document.getElementById('jsFileSize').textContent = `${formatBytes(sampleJs.length)} • Ready`;
       document.getElementById('jsProgressBar').style.width = '100%';
@@ -324,7 +448,7 @@ console.log('✅ logic.js executing seamlessly on Vercel deployment!');`;
       const randomSuffix = Math.random().toString(36).substring(2, 6);
       document.getElementById('projectNameInput').value = `showcase-app-${randomSuffix}`;
 
-      showToast('Loaded demo sample files into all 3 slots!');
+      showToast('Loaded demo sample files into all slots!');
     } catch (err) {
       showToast('Failed to load sample files', true);
     } finally {
@@ -347,6 +471,8 @@ function initFormHandler() {
   const submitBtn = document.getElementById('deploySubmitBtn');
   const resultCard = document.getElementById('deployResultCard');
 
+  if (!form) return;
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
 
@@ -356,7 +482,12 @@ function initFormHandler() {
       return;
     }
 
-    if (!appState.htmlContent) {
+    if (appState.uploadMode === 'ZIP' && !appState.zipFile) {
+      showToast('Please drop or select a project .ZIP file first.', true);
+      return;
+    }
+
+    if (appState.uploadMode === 'CLASSIC' && !appState.htmlContent) {
       showToast('Please upload or provide index.html file first.', true);
       return;
     }
@@ -366,8 +497,9 @@ function initFormHandler() {
     statusContainer.classList.remove('hidden');
     resultCard.classList.add('hidden');
     progressBar.style.width = '20%';
-    statusTitle.textContent = 'Processing files...';
-    statusDesc.textContent = 'Ensuring style.css and logic.js are linked with index.html...';
+    progressBar.style.background = 'var(--gradient-primary)';
+    statusTitle.textContent = 'Preparing files & configuration...';
+    statusDesc.textContent = appState.uploadMode === 'ZIP' ? 'Extracting ZIP archive and packaging assets...' : 'Connecting styles and scripts...';
 
     const updateStep = (percent, title, desc) => {
       progressBar.style.width = `${percent}%`;
@@ -376,19 +508,25 @@ function initFormHandler() {
     };
 
     try {
-      setTimeout(() => updateStep(50, 'Uploading to Vercel Deployments...', 'Sending payload to Vercel REST API...'), 600);
+      setTimeout(() => updateStep(50, 'Configuring Vercel Environment...', 'Setting up environment variables and uploading to Vercel API...'), 600);
+
+      const formData = new FormData();
+      formData.append('projectName', projectName);
+      if (appState.envContent) {
+        formData.append('envContent', appState.envContent);
+      }
+
+      if (appState.uploadMode === 'ZIP' && appState.zipFile) {
+        formData.append('zipFile', appState.zipFile);
+      } else {
+        formData.append('htmlContent', appState.htmlContent);
+        formData.append('cssContent', appState.cssContent);
+        formData.append('jsContent', appState.jsContent);
+      }
 
       const response = await fetch('/api/deploy', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          projectName,
-          htmlContent: appState.htmlContent,
-          cssContent: appState.cssContent,
-          jsContent: appState.jsContent
-        })
+        body: formData
       });
 
       const data = await response.json();
@@ -397,25 +535,27 @@ function initFormHandler() {
         throw new Error(data.error || 'Deployment failed');
       }
 
-      updateStep(100, 'Deployment Complete! 🎉', 'Website is live on Vercel CDN.');
+      updateStep(100, 'Deployment Complete! 🎉', 'Website is live on Vercel Global Edge CDN.');
       document.getElementById('deploySpinner').style.display = 'none';
 
       // Show result
       const deploy = data.deployment;
+      const workingUrl = deploy.canonicalUrl || deploy.directUrl;
+
       document.getElementById('resultCanonicalUrl').textContent = deploy.canonicalUrl;
       document.getElementById('resultCanonicalUrl').href = deploy.canonicalUrl;
       document.getElementById('resultDirectUrl').textContent = deploy.directUrl;
       document.getElementById('resultDirectUrl').href = deploy.directUrl;
-      document.getElementById('openLiveSiteBtn').href = deploy.canonicalUrl;
+      document.getElementById('openLiveSiteBtn').href = workingUrl;
 
       // Sandbox Preview button binding
       const previewBtn = document.getElementById('previewInSandboxBtn');
       previewBtn.onclick = () => {
-        openSandboxPreview(deploy.canonicalUrl, deploy.projectName);
+        openSandboxPreview(workingUrl, deploy.projectName);
       };
 
       resultCard.classList.remove('hidden');
-      showToast(`Website deployed successfully to ${deploy.canonicalUrl}!`);
+      showToast(`Website deployed successfully to ${workingUrl}!`);
 
       // Refresh history list
       loadHistoryList();
@@ -441,6 +581,8 @@ function initTelegramSimulator() {
   const sendBtn = document.getElementById('tgSimSendBtn');
   const uploadBtn = document.getElementById('simUploadBtn');
 
+  if (!container || !input || !sendBtn) return;
+
   const appendMsg = (text, isUser = false) => {
     const bubble = document.createElement('div');
     bubble.className = `tg-bubble ${isUser ? 'tg-user' : 'tg-bot'}`;
@@ -461,16 +603,14 @@ function initTelegramSimulator() {
     appendMsg(text, true);
 
     if (text.toLowerCase() === '/start') {
-      appState.botSimStep = 'AWAITING_HTML';
+      appState.botSimStep = 'AWAITING_SOURCE';
       setTimeout(() => {
         appendMsg(
           `👋 <strong>Hello! Welcome to Vercel Auto Host Bot.</strong><br><br>` +
-          `I will help you deploy your website to <strong>Vercel</strong> in 4 simple steps:<br>` +
-          `1️⃣ Send <code>index.html</code><br>` +
-          `2️⃣ Send <code>style.css</code><br>` +
-          `3️⃣ Send <code>logic.js</code><br>` +
-          `4️⃣ Enter your desired Website Name<br><br>` +
-          `📌 <strong>Step 1/4:</strong> Please send your <strong>index.html</strong> file (click 📎 or upload).`
+          `Deploy your website to <strong>Vercel</strong> in 3 easy steps:<br><br>` +
+          `📦 <strong>Option 1 (Recommended):</strong> Send a <code>.zip</code> file with your full project.<br>` +
+          `📄 <strong>Option 2:</strong> Send individual files (<code>index.html</code> ➔ <code>style.css</code> ➔ <code>logic.js</code>).<br><br>` +
+          `📌 <strong>Step 1:</strong> Please upload your <strong>.ZIP file</strong> or <strong>index.html</strong> (click 📎 or upload).`
         );
       }, 500);
       return;
@@ -488,9 +628,35 @@ function initTelegramSimulator() {
       return;
     }
 
+    if (appState.botSimStep === 'AWAITING_ENV') {
+      if (text.toLowerCase() === 'skip' || text.toLowerCase() === '/skip') {
+        appState.botSimStep = 'AWAITING_NAME';
+        setTimeout(() => {
+          appendMsg(
+            `⏭️ <strong>Skipped .env configuration.</strong><br><br>` +
+            `📌 <strong>Final Step:</strong> What <strong>Website Name</strong> do you want for your site?<br>` +
+            `<em>(e.g., <code>my-portfolio</code>, <code>awesome-shop</code>)</em>`
+          );
+        }, 400);
+        return;
+      }
+
+      if (text.includes('=')) {
+        appState.botSimStep = 'AWAITING_NAME';
+        setTimeout(() => {
+          appendMsg(
+            `🔐 <strong>Environment variables configured successfully!</strong> ✅<br><br>` +
+            `📌 <strong>Final Step:</strong> What <strong>Website Name</strong> do you want for your site?<br>` +
+            `<em>(e.g., <code>my-portfolio</code>, <code>awesome-shop</code>)</em>`
+          );
+        }, 400);
+        return;
+      }
+    }
+
     if (appState.botSimStep === 'AWAITING_NAME') {
       const siteName = text.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-      appendMsg(`⏳ <strong>Connecting files & deploying \`${siteName}\` to Vercel...</strong><br>🔗 Auto-linking style.css & logic.js into index.html...`);
+      appendMsg(`⏳ <strong>Packaging files & deploying \`${siteName}\` to Vercel...</strong><br>⚙️ Setting up environment variables & edge CDN...`);
 
       // Trigger actual deploy or simulated response
       try {
@@ -499,9 +665,10 @@ function initTelegramSimulator() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             projectName: siteName,
-            htmlContent: appState.botSimData.html || '<h1>Live Site</h1>',
-            cssContent: appState.botSimData.css || 'body { font-family: sans-serif; }',
-            jsContent: appState.botSimData.js || 'console.log("ready");'
+            htmlContent: appState.htmlContent || '<h1>Live Vercel Site</h1><p>Hosted via Telegram Bot</p>',
+            cssContent: appState.cssContent || 'body { font-family: sans-serif; background: #0f172a; color: #fff; padding: 40px; }',
+            jsContent: appState.jsContent || 'console.log("ready");',
+            envContent: appState.envContent || ''
           })
         });
         const data = await response.json();
@@ -512,11 +679,9 @@ function initTelegramSimulator() {
             appendMsg(
               `🎉 <strong>Website Successfully Deployed to Vercel!</strong><br><br>` +
               `🏷️ <strong>Project Name:</strong> <code>${dep.projectName}</code><br>` +
+              `📦 <strong>Files:</strong> <code>${dep.fileCount || 3} deployed</code><br>` +
               `🌐 <strong>Live Website URL:</strong><br>👉 <a href="${dep.canonicalUrl}" target="_blank" style="color:#a5b4fc">${dep.canonicalUrl}</a><br><br>` +
-              `✨ <strong>Connected Components:</strong><br>` +
-              `• <code>index.html</code> (Root Entrypoint)<br>` +
-              `• <code>style.css</code> (Styles Linked)<br>` +
-              `• <code>logic.js</code> (Scripts Linked)`
+              `⚡ <strong>Direct Preview:</strong><br>👉 <a href="${dep.directUrl}" target="_blank" style="color:#a5b4fc">${dep.directUrl}</a>`
             );
             loadHistoryList();
           }, 800);
@@ -533,7 +698,7 @@ function initTelegramSimulator() {
 
     // Guidance for other text
     setTimeout(() => {
-      appendMsg(`💡 Type <code>/start</code> to begin uploading your 3 website files!`);
+      appendMsg(`💡 Type <code>/start</code> to begin uploading your website!`);
     }, 400);
   };
 
@@ -544,40 +709,28 @@ function initTelegramSimulator() {
 
   // Simulated File Upload via paperclip button
   uploadBtn.addEventListener('click', () => {
-    if (appState.botSimStep === 'AWAITING_HTML') {
-      appendMsg(`📎 <em>Sent file: index.html</em>`, true);
-      appendMsg(`📥 <strong>Uploading index.html...</strong><br>Progress: [██████████] 100%<br><br>✅ <strong>File Uploaded successfully!</strong>`);
-      appState.botSimData.html = appState.htmlContent || '<h1>Sample</h1>';
-      appState.botSimStep = 'AWAITING_CSS';
+    if (appState.botSimStep === 'AWAITING_SOURCE') {
+      appendMsg(`📎 <em>Sent file: website-project.zip</em>`, true);
+      appendMsg(`📥 <strong>Uploading website-project.zip...</strong><br>Progress: [██████████] 100%<br><br>✅ <strong>Archive uploaded & extracted! (12 files found, index.html verified)</strong>`);
+      appState.botSimStep = 'AWAITING_ENV';
       setTimeout(() => {
-        appendMsg(`📌 <strong>Step 2/4:</strong> Great! Now please upload your <strong>style.css</strong> file.`);
+        appendMsg(
+          `📌 <strong>Step 2/3: Environment Variables (.env)</strong><br>` +
+          `• Send a <code>.env</code> file or paste <code>KEY=VALUE</code><br>` +
+          `• Or type <code>skip</code> if not needed.`
+        );
       }, 500);
       return;
     }
 
-    if (appState.botSimStep === 'AWAITING_CSS') {
-      appendMsg(`📎 <em>Sent file: style.css</em>`, true);
-      appendMsg(`📥 <strong>Uploading style.css...</strong><br>Progress: [██████████] 100%<br><br>✅ <strong>File Uploaded successfully!</strong>`);
-      appState.botSimData.css = appState.cssContent || 'body { color: blue; }';
-      appState.botSimStep = 'AWAITING_JS';
-      setTimeout(() => {
-        appendMsg(`📌 <strong>Step 3/4:</strong> Excellent! Now please upload your <strong>logic.js</strong> file.`);
-      }, 500);
-      return;
-    }
-
-    if (appState.botSimStep === 'AWAITING_JS') {
-      appendMsg(`📎 <em>Sent file: logic.js</em>`, true);
-      appendMsg(`📥 <strong>Uploading logic.js...</strong><br>Progress: [██████████] 100%<br><br>✅ <strong>File Uploaded successfully!</strong>`);
-      appState.botSimData.js = appState.jsContent || 'console.log("run");';
+    if (appState.botSimStep === 'AWAITING_ENV') {
+      appendMsg(`📎 <em>Sent file: .env</em>`, true);
+      appendMsg(`📥 <strong>Uploading .env...</strong><br>Progress: [██████████] 100%<br><br>🔐 <strong>Configured 3 environment variables!</strong>`);
       appState.botSimStep = 'AWAITING_NAME';
       setTimeout(() => {
         appendMsg(
-          `✨ <strong>All 3 files uploaded successfully!</strong><br>` +
-          `• <code>index.html</code> ✅<br>` +
-          `• <code>style.css</code> ✅<br>` +
-          `• <code>logic.js</code> ✅<br><br>` +
-          `📌 <strong>Step 4/4:</strong> What <strong>Website Name</strong> do you want for your site?<br>` +
+          `📌 <strong>Step 3/3: Website Name</strong><br>` +
+          `What <strong>Website Name</strong> do you want for your site?<br>` +
           `<em>(e.g., <code>my-portfolio</code>, <code>awesome-shop</code>)</em>`
         );
       }, 500);
@@ -620,18 +773,18 @@ async function loadHistoryList() {
       <tr>
         <td><strong>${dep.projectName}</strong></td>
         <td>
-          <a href="${dep.canonicalUrl}" target="_blank" class="url-link">
-            ${dep.canonicalUrl}
+          <a href="${dep.canonicalUrl || dep.directUrl}" target="_blank" class="url-link">
+            ${dep.canonicalUrl || dep.directUrl}
           </a>
         </td>
         <td><span class="slot-badge">${dep.source || 'Vercel API'}</span></td>
         <td>${new Date(dep.createdAt).toLocaleString()}</td>
         <td>
           <div style="display: flex; gap: 8px;">
-            <button class="btn btn-xs btn-glass" onclick="openSandboxPreview('${dep.canonicalUrl}', '${dep.projectName}')">
+            <button class="btn btn-xs btn-glass" onclick="openSandboxPreview('${dep.canonicalUrl || dep.directUrl}', '${dep.projectName}')">
               <i data-lucide="layout"></i> Preview
             </button>
-            <a href="${dep.canonicalUrl}" target="_blank" class="btn btn-xs btn-primary">
+            <a href="${dep.canonicalUrl || dep.directUrl}" target="_blank" class="btn btn-xs btn-primary">
               <i data-lucide="external-link"></i> Open
             </a>
           </div>
@@ -652,109 +805,87 @@ function initHistoryViewer() {
   if (refreshBtn) {
     refreshBtn.addEventListener('click', () => {
       loadHistoryList();
-      showToast('Deployment history refreshed');
+      showToast('History refreshed');
     });
   }
   loadHistoryList();
 }
 
 /**
- * Sandbox Preview Modal Controller
+ * Sandbox Live Modal Logic
  */
-window.openSandboxPreview = function (url, title) {
+window.openSandboxPreview = function (url, name) {
   const modal = document.getElementById('previewModal');
   const iframe = document.getElementById('previewIframe');
-  const modalTitle = document.getElementById('previewModalTitle');
+  const title = document.getElementById('previewModalTitle');
   const modalUrl = document.getElementById('previewModalUrl');
-  const externalLink = document.getElementById('previewModalExternalLink');
+  const extLink = document.getElementById('previewModalExternalLink');
 
   if (!modal || !iframe) return;
 
-  modalTitle.textContent = title || 'Website Preview';
+  title.textContent = `Preview: ${name}`;
   modalUrl.textContent = url;
-  externalLink.href = url;
+  extLink.href = url;
   iframe.src = url;
 
   modal.classList.remove('hidden');
 };
 
 /**
- * Modals Initialization
+ * Initializes all modal dialogs
  */
 function initModals() {
-  const closePreviewBtn = document.getElementById('closePreviewModalBtn');
+  // Preview Modal Close
+  const closePreview = document.getElementById('closePreviewModalBtn');
   const previewModal = document.getElementById('previewModal');
   const iframe = document.getElementById('previewIframe');
 
-  if (closePreviewBtn && previewModal) {
-    closePreviewBtn.addEventListener('click', () => {
+  if (closePreview && previewModal) {
+    closePreview.addEventListener('click', () => {
       previewModal.classList.add('hidden');
-      iframe.src = 'about:blank';
+      if (iframe) iframe.src = 'about:blank';
     });
   }
 
-  const openEnvBtn = document.getElementById('openEnvGuideBtn');
-  const closeEnvBtn = document.getElementById('closeEnvModalBtn');
+  // Env Modal Open / Close
+  const openEnv = document.getElementById('openEnvModalBtn');
+  const closeEnv = document.getElementById('closeEnvModalBtn');
   const envModal = document.getElementById('envModal');
 
-  if (openEnvBtn && envModal) {
-    openEnvBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      envModal.classList.remove('hidden');
-    });
+  if (openEnv && envModal) {
+    openEnv.addEventListener('click', () => envModal.classList.remove('hidden'));
+  }
+  if (closeEnv && envModal) {
+    closeEnv.addEventListener('click', () => envModal.classList.add('hidden'));
   }
 
-  if (closeEnvBtn && envModal) {
-    closeEnvBtn.addEventListener('click', () => {
-      envModal.classList.add('hidden');
-    });
-  }
-
-  // Close modals when clicking overlay background
-  window.addEventListener('click', (e) => {
-    if (e.target === previewModal) {
-      previewModal.classList.add('hidden');
-      iframe.src = 'about:blank';
-    }
-    if (e.target === envModal) {
-      envModal.classList.add('hidden');
-    }
-  });
-
-  // Webhook Registration Handler
-  const syncWebhookBtn = document.getElementById('syncWebhookBtn');
-  const webhookFeedback = document.getElementById('webhookStatusFeedback');
-  if (syncWebhookBtn) {
-    syncWebhookBtn.addEventListener('click', async () => {
-      syncWebhookBtn.disabled = true;
-      syncWebhookBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Syncing...';
+  // Webhook Sync Button
+  const syncBtn = document.getElementById('syncWebhookBtn');
+  const syncFeedback = document.getElementById('webhookStatusFeedback');
+  if (syncBtn && syncFeedback) {
+    syncBtn.addEventListener('click', async () => {
+      syncBtn.disabled = true;
+      syncBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Syncing...';
       try {
-        const currentOrigin = window.location.origin;
-        const res = await fetch('/api/set-webhook', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: currentOrigin })
-        });
+        const res = await fetch('/api/set-webhook', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
         const data = await res.json();
         if (data.success) {
-          webhookFeedback.textContent = `✅ Webhook Linked: ${data.webhookUrl}`;
-          showToast('Telegram Webhook registered successfully!');
+          syncFeedback.textContent = '✅ Webhook synced with Telegram!';
+          showToast('Telegram Webhook linked successfully!');
         } else {
-          webhookFeedback.textContent = `❌ ${data.error || 'Failed to sync'}`;
-          showToast(data.error || 'Webhook registration failed', true);
+          syncFeedback.textContent = `❌ ${data.error}`;
+          showToast(`Webhook sync error: ${data.error}`, true);
         }
       } catch (err) {
-        webhookFeedback.textContent = `❌ ${err.message}`;
-        showToast(err.message, true);
+        syncFeedback.textContent = `❌ ${err.message}`;
       } finally {
-        syncWebhookBtn.disabled = false;
-        syncWebhookBtn.innerHTML = '<i data-lucide="zap"></i> Register Webhook Now';
+        syncBtn.disabled = false;
+        syncBtn.innerHTML = '<i data-lucide="zap"></i> Register Webhook Now';
         if (window.lucide) window.lucide.createIcons();
       }
     });
   }
 
-  // Clipboard copy buttons
   document.addEventListener('click', (e) => {
     const copyBtn = e.target.closest('.copy-btn');
     if (copyBtn) {
