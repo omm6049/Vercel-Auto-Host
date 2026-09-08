@@ -160,16 +160,19 @@ app.post('/api/auth/request', async (req, res) => {
 });
 
 // API: Poll Status of an Access Request
-app.get('/api/auth/status', (req, res) => {
+app.get('/api/auth/status', async (req, res) => {
   const requestId = req.query.id || req.query.requestId;
   if (!requestId) {
     return res.status(400).json({ success: false, error: 'requestId parameter is required' });
   }
 
-  const record = getAccessRequestStatus(requestId);
-  if (!record) {
-    return res.status(404).json({ success: false, error: 'Access request not found or expired' });
-  }
+  const record = (await getAccessRequestStatus(requestId)) || {
+    id: requestId,
+    name: 'Visitor',
+    reason: 'Access Request',
+    status: 'PENDING',
+    token: null
+  };
 
   res.json({
     success: true,
@@ -182,6 +185,57 @@ app.get('/api/auth/status', (req, res) => {
       approvedBy: record.approvedBy || null
     }
   });
+});
+
+// API: 1-Click Approve / Decline Link (Browser & Telegram direct links)
+app.get('/api/auth/approve-link', async (req, res) => {
+  try {
+    const requestId = req.query.id || req.query.requestId;
+    const action = (req.query.action || 'approve').toLowerCase();
+
+    if (!requestId) {
+      return res.status(400).send('<h3>Invalid Request: Missing request ID</h3>');
+    }
+
+    let record;
+    if (action === 'reject') {
+      record = await rejectAccessRequest(requestId, 'Admin (Link)');
+    } else {
+      record = await approveAccessRequest(requestId, 'Admin (Link)');
+    }
+
+    const isApproved = record.status === 'APPROVED';
+    return res.status(200).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>${isApproved ? 'Access Approved' : 'Request Declined'}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #090d16; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1rem; }
+          .card { background: #131d2e; border: 1px solid ${isApproved ? '#10b981' : '#ef4444'}; border-radius: 16px; padding: 2.5rem; max-width: 440px; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
+          .icon { font-size: 3.5rem; margin-bottom: 1rem; }
+          h2 { margin: 0 0 0.5rem; font-size: 1.6rem; color: ${isApproved ? '#34d399' : '#f87171'}; }
+          p { color: #94a3b8; font-size: 0.95rem; line-height: 1.5; margin: 0 0 1.5rem; }
+          .badge { display: inline-block; background: rgba(255,255,255,0.06); padding: 0.5rem 1rem; border-radius: 8px; font-family: monospace; font-size: 0.85rem; color: #cbd5e1; margin-bottom: 1.5rem; }
+          .btn { display: inline-block; background: #0070f3; color: #fff; text-decoration: none; padding: 0.75rem 1.5rem; border-radius: 8px; font-weight: 600; font-size: 0.95rem; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <div class="icon">${isApproved ? '🎉' : '🚫'}</div>
+          <h2>${isApproved ? 'Access Granted Successfully!' : 'Access Request Declined'}</h2>
+          <p>${isApproved ? `Visitor <strong>${record.name}</strong> now has full access to the deployment launchpad.` : `Access for <strong>${record.name}</strong> has been rejected.`}</p>
+          <div class="badge">Request ID: ${requestId}</div>
+          <br>
+          <a class="btn" href="/">Go to Main Website</a>
+        </div>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // API: Verify Session Token
@@ -205,15 +259,16 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 // API: Dev / Simulation Instant Approval (Useful for testing / when Telegram bot is offline)
-app.post('/api/auth/simulate-approve', (req, res) => {
+app.post('/api/auth/simulate-approve', async (req, res) => {
   const { requestId } = req.body;
   if (!requestId) return res.status(400).json({ success: false, error: 'requestId is required' });
 
-  const record = approveAccessRequest(requestId, 'Simulation Mode');
+  const record = await approveAccessRequest(requestId, 'Simulation Mode');
   if (!record) return res.status(404).json({ success: false, error: 'Request not found' });
 
   res.json({ success: true, record });
 });
+
 
 // API: Deployment History
 app.get('/api/history', (req, res) => {

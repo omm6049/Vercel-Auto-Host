@@ -1,7 +1,9 @@
+import 'dotenv/config';
 import assert from 'assert';
 import {
   createAccessRequest,
   getAccessRequestStatus,
+  getAccessRequestStatusAsync,
   approveAccessRequest,
   rejectAccessRequest,
   verifyAccessToken,
@@ -27,15 +29,15 @@ async function runAuthFlowTests() {
 
   // Test 2: Query Access Request Status
   console.log('\n--- Test 2: Query Pending Status ---');
-  const queried = getAccessRequestStatus(reqRecord.id);
+  const queried = await getAccessRequestStatusAsync(reqRecord.id);
   assert.strictEqual(queried.status, 'PENDING');
   console.log('✅ Verified getAccessRequestStatus returns PENDING status');
 
   // Test 3: Simulate 1-Click Telegram Approval
   console.log('\n--- Test 3: 1-Click Telegram Admin Approval ---');
-  const approvedRecord = approveAccessRequest(reqRecord.id, 'TelegramAdminBot');
+  const approvedRecord = await approveAccessRequest(reqRecord.id, 'TelegramAdminBot');
   assert.strictEqual(approvedRecord.status, 'APPROVED');
-  assert(approvedRecord.token && approvedRecord.token.startsWith('tok_'), 'Session token should be generated');
+  assert(approvedRecord.token && approvedRecord.token.startsWith('tok.'), 'HMAC session token should be generated');
   assert.strictEqual(approvedRecord.approvedBy, 'TelegramAdminBot');
   console.log('✅ Approved request successfully! Token generated:', approvedRecord.token);
 
@@ -48,7 +50,7 @@ async function runAuthFlowTests() {
   // Test 5: Rejection Flow
   console.log('\n--- Test 5: Rejection Flow ---');
   const req2 = await createAccessRequest({ name: 'Spam Bot', reason: 'Spamming', ip: '1.2.3.4' });
-  const rejected = rejectAccessRequest(req2.id, 'Admin');
+  const rejected = await rejectAccessRequest(req2.id, 'Admin');
   assert.strictEqual(rejected.status, 'REJECTED');
   assert.strictEqual(rejected.token, null);
   console.log('✅ Rejection status recorded successfully');
@@ -66,3 +68,4 @@ runAuthFlowTests().catch((err) => {
   console.error('❌ Test failed:', err);
   process.exit(1);
 });
+
