@@ -61,6 +61,63 @@ export function parseEnvFileContent(envContent) {
 }
 
 /**
+ * Ensures a Vercel project exists and is configured for public access (disables SSO / Password protection).
+ */
+export async function ensurePublicVercelProject(projectName) {
+  const token = process.env.VERCEL_TOKEN;
+  if (!token || !projectName) return null;
+
+  const teamId = process.env.VERCEL_TEAM_ID;
+  const queryParams = teamId ? `?teamId=${teamId}` : '';
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  };
+
+  try {
+    // 1. Check if project already exists
+    const res = await axios.get(`https://api.vercel.com/v9/projects/${projectName}${queryParams}`, { headers, timeout: 5000 });
+    
+    // Disable protection if currently on
+    if (res.data?.ssoProtection || res.data?.passwordProtection) {
+      try {
+        await axios.patch(
+          `https://api.vercel.com/v9/projects/${projectName}${queryParams}`,
+          {
+            ssoProtection: null,
+            passwordProtection: null
+          },
+          { headers, timeout: 5000 }
+        );
+      } catch (patchErr) {
+        console.warn(`[Vercel Project Patch Notice]:`, patchErr.message);
+      }
+    }
+    return res.data;
+  } catch (err) {
+    if (err.response?.status === 404) {
+      // 2. Create project with public settings
+      try {
+        const createRes = await axios.post(
+          `https://api.vercel.com/v9/projects${queryParams}`,
+          {
+            name: projectName,
+            framework: null,
+            ssoProtection: null,
+            passwordProtection: null
+          },
+          { headers, timeout: 10000 }
+        );
+        return createRes.data;
+      } catch (createErr) {
+        console.warn(`[Vercel Project Create Notice]:`, createErr.response?.data?.error?.message || createErr.message);
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Sets environment variables for a Vercel project using Vercel REST API.
  */
 export async function setVercelEnvironmentVariables(projectName, envVars) {
@@ -76,22 +133,8 @@ export async function setVercelEnvironmentVariables(projectName, envVars) {
     'Content-Type': 'application/json'
   };
 
-  // 1. Ensure project exists (or create it)
-  try {
-    await axios.get(`https://api.vercel.com/v9/projects/${projectName}${queryParams}`, { headers, timeout: 5000 });
-  } catch (err) {
-    if (err.response?.status === 404) {
-      try {
-        await axios.post(
-          `https://api.vercel.com/v9/projects${queryParams}`,
-          { name: projectName, framework: null },
-          { headers, timeout: 10000 }
-        );
-      } catch (createErr) {
-        console.warn(`[Vercel Project Notice]: Project creation status:`, createErr.response?.data?.error?.message || createErr.message);
-      }
-    }
-  }
+  // 1. Ensure project exists and is public
+  await ensurePublicVercelProject(projectName);
 
   // 2. Add each environment variable to the project
   let addedCount = 0;
@@ -380,6 +423,9 @@ export async function deployToVercel({
   const queryParams = teamId ? `?teamId=${teamId}` : '';
   const endpoint = `https://api.vercel.com/v13/deployments${queryParams}`;
 
+  // Ensure project exists with public settings (SSO / Password protection disabled)
+  await ensurePublicVercelProject(cleanName);
+
   const payload = {
     name: cleanName,
     files: deploymentFiles,
@@ -401,13 +447,31 @@ export async function deployToVercel({
     const deployment = response.data;
     const directDeploymentUrl = deployment.url ? `https://${deployment.url}` : `https://${cleanName}.vercel.app`;
     
-    // Safely determine canonical URL:
-    // If Vercel provided an assigned alias, use it; otherwise fallback to the direct deployment URL
-    let canonicalAppUrl = directDeploymentUrl;
-    if (Array.isArray(deployment.alias) && deployment.alias.length > 0) {
-      canonicalAppUrl = `https://${deployment.alias[0]}`;
-    } else if (Array.isArray(deployment.aliases) && deployment.aliases.length > 0) {
-      canonicalAppUrl = `https://${deployment.aliases[0]}`;
+    // Assign & ensure clean production alias https://<name>.vercel.app
+    let canonicalAppUrl = `https://${cleanName}.vercel.app`;
+    try {
+      const aliasRes = await axios.post(
+        `https://api.vercel.com/v2/deployments/${deployment.id}/aliases${queryParams}`,
+        { alias: `${cleanName}.vercel.app` },
+        {
+          headers: {
+            Authorization: `Bearer ${vercelToken}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      if (aliasRes.data?.alias) {
+        canonicalAppUrl = `https://${aliasRes.data.alias}`;
+      }
+    } catch (aliasErr) {
+      if (Array.isArray(deployment.alias) && deployment.alias.length > 0) {
+        canonicalAppUrl = `https://${deployment.alias[0]}`;
+      } else if (Array.isArray(deployment.aliases) && deployment.aliases.length > 0) {
+        canonicalAppUrl = `https://${deployment.aliases[0]}`;
+      } else if (deployment.url) {
+        canonicalAppUrl = `https://${deployment.url}`;
+      }
     }
 
     return {
