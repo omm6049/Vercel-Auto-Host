@@ -721,6 +721,39 @@ function initModals() {
     }
   });
 
+  // Webhook Registration Handler
+  const syncWebhookBtn = document.getElementById('syncWebhookBtn');
+  const webhookFeedback = document.getElementById('webhookStatusFeedback');
+  if (syncWebhookBtn) {
+    syncWebhookBtn.addEventListener('click', async () => {
+      syncWebhookBtn.disabled = true;
+      syncWebhookBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Syncing...';
+      try {
+        const currentOrigin = window.location.origin;
+        const res = await fetch('/api/set-webhook', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: currentOrigin })
+        });
+        const data = await res.json();
+        if (data.success) {
+          webhookFeedback.textContent = `✅ Webhook Linked: ${data.webhookUrl}`;
+          showToast('Telegram Webhook registered successfully!');
+        } else {
+          webhookFeedback.textContent = `❌ ${data.error || 'Failed to sync'}`;
+          showToast(data.error || 'Webhook registration failed', true);
+        }
+      } catch (err) {
+        webhookFeedback.textContent = `❌ ${err.message}`;
+        showToast(err.message, true);
+      } finally {
+        syncWebhookBtn.disabled = false;
+        syncWebhookBtn.innerHTML = '<i data-lucide="zap"></i> Register Webhook Now';
+        if (window.lucide) window.lucide.createIcons();
+      }
+    });
+  }
+
   // Clipboard copy buttons
   document.addEventListener('click', (e) => {
     const copyBtn = e.target.closest('.copy-btn');

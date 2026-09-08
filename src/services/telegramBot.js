@@ -8,6 +8,8 @@ const userSessions = new Map();
 // Global deployment history for the dashboard & bot
 export const deploymentHistory = [];
 
+export let botInstance = null;
+
 /**
  * Creates a visual ASCII progress bar
  */
@@ -24,7 +26,7 @@ function createProgressBar(percent) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Downloads a file from Telegram with simulated/chunked percentage progress updates
+ * Downloads a file from Telegram with chunked percentage progress updates
  */
 async function downloadTelegramFileWithProgress(bot, chatId, fileId, fileName) {
   const progressMsg = await bot.sendMessage(
@@ -38,7 +40,7 @@ async function downloadTelegramFileWithProgress(bot, chatId, fileId, fileName) {
   // Progressive steps for visual feedback
   const progressSteps = [25, 50, 75, 90, 100];
   for (const step of progressSteps.slice(0, -1)) {
-    await sleep(250);
+    await sleep(200);
     try {
       await bot.editMessageText(
         `📥 *Uploading ${fileName}...*\nProgress: ${createProgressBar(step)}`,
@@ -78,23 +80,34 @@ async function downloadTelegramFileWithProgress(bot, chatId, fileId, fileName) {
 }
 
 /**
- * Initializes and starts the Telegram bot
+ * Initializes the Telegram bot in either Polling mode (Local) or Webhook mode (Vercel Serverless)
  */
 export function initTelegramBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
   if (!token || token === 'your_telegram_bot_token_here') {
-    console.warn('⚠️ [Telegram Bot]: TELEGRAM_BOT_TOKEN is not set or using placeholder in .env. Bot polling skipped.');
+    console.warn('⚠️ [Telegram Bot]: TELEGRAM_BOT_TOKEN is not configured. Telegram bot skipped.');
     return null;
   }
 
-  const bot = new TelegramBot(token, { polling: true });
-  console.log('🤖 [Telegram Bot]: Bot initialized and polling for messages...');
+  // Determine mode: Serverless (Vercel) vs Long Polling (Local machine)
+  const isVercelServerless = process.env.VERCEL === '1' || process.env.USE_WEBHOOK === 'true';
+  const usePolling = !isVercelServerless;
 
-  // Error listener
-  bot.on('polling_error', (error) => {
-    console.error('⚠️ [Telegram Polling Error]:', error.message || error);
-  });
+  if (botInstance) {
+    return botInstance;
+  }
+
+  const bot = new TelegramBot(token, { polling: usePolling });
+  botInstance = bot;
+
+  console.log(`🤖 [Telegram Bot]: Bot initialized in ${usePolling ? 'Long Polling (Local)' : 'Webhook (Serverless)'} mode.`);
+
+  if (usePolling) {
+    bot.on('polling_error', (error) => {
+      console.error('⚠️ [Telegram Polling Error]:', error.message || error);
+    });
+  }
 
   // /start command handler
   bot.onText(/\/start/, async (msg) => {
@@ -166,7 +179,7 @@ export function initTelegramBot() {
       `• /cancel - Reset and cancel current upload\n` +
       `• /status - View your recent deployments\n` +
       `• /help - Show this guide\n\n` +
-      `💡 *Tip:* You can send your files as documents or attachments. We automatically connect \`style.css\` and \`logic.js\` with your \`index.html\` so your site works instantly on \`<name>.vercel.app\`!`,
+      `💡 *Tip:* We automatically connect \`style.css\` and \`logic.js\` with your \`index.html\` so your site works instantly on \`<name>.vercel.app\`!`,
       { parse_mode: 'Markdown' }
     );
   });
@@ -203,7 +216,7 @@ export function initTelegramBot() {
         session.htmlContent = await downloadTelegramFileWithProgress(bot, chatId, doc.file_id, doc.file_name || 'index.html');
         session.step = 'AWAITING_CSS';
 
-        await sleep(300);
+        await sleep(250);
         await bot.sendMessage(
           chatId,
           `📌 *Step 2/4:* Great! Now please upload your *style.css* file.`,
@@ -231,7 +244,7 @@ export function initTelegramBot() {
         session.cssContent = await downloadTelegramFileWithProgress(bot, chatId, doc.file_id, doc.file_name || 'style.css');
         session.step = 'AWAITING_JS';
 
-        await sleep(300);
+        await sleep(250);
         await bot.sendMessage(
           chatId,
           `📌 *Step 3/4:* Excellent! Now please upload your *logic.js* file.`,
@@ -259,7 +272,7 @@ export function initTelegramBot() {
         session.jsContent = await downloadTelegramFileWithProgress(bot, chatId, doc.file_id, doc.file_name || 'logic.js');
         session.step = 'AWAITING_NAME';
 
-        await sleep(300);
+        await sleep(250);
         await bot.sendMessage(
           chatId,
           `✨ *All 3 files uploaded successfully!*\n` +
@@ -279,7 +292,7 @@ export function initTelegramBot() {
     }
   });
 
-  // Handle plain text messages (for website name input or general guidance)
+  // Handle plain text messages (for website name input)
   bot.on('message', async (msg) => {
     if (msg.document || (msg.text && msg.text.startsWith('/'))) return;
 
@@ -383,7 +396,7 @@ export function initTelegramBot() {
         );
       } catch (err) {
         console.error('Deployment error:', err);
-        session.step = 'AWAITING_NAME'; // Allow retry
+        session.step = 'AWAITING_NAME';
 
         await bot.editMessageText(
           `❌ *Deployment Error:*\n${err.message}\n\n` +
@@ -399,4 +412,33 @@ export function initTelegramBot() {
   });
 
   return bot;
+}
+
+/**
+ * Registers Webhook URL with Telegram API
+ */
+export async function setBotWebhook(baseUrl) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) throw new Error('TELEGRAM_BOT_TOKEN is missing');
+
+  const webhookEndpoint = `${baseUrl.replace(/\/+$/, '')}/api/webhook`;
+  const url = `https://api.telegram.org/bot${token}/setWebhook?url=${encodeURIComponent(webhookEndpoint)}`;
+  
+  const res = await axios.get(url);
+  return res.data;
+}
+
+/**
+ * Retrieves current Webhook status from Telegram API
+ */
+export async function getBotWebhookInfo() {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return { ok: false, description: 'TELEGRAM_BOT_TOKEN is missing' };
+
+  try {
+    const res = await axios.get(`https://api.telegram.org/bot${token}/getWebhookInfo`);
+    return res.data;
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 }

@@ -393,6 +393,20 @@
         </button>
       </div>
       <div class="modal-body env-modal-body">
+        <div class="env-item highlight-env">
+          <div class="env-item-header">
+            <strong>🌐 Telegram Webhook Sync (For Vercel 24/7 Hosting)</strong>
+            <span class="env-key">Auto Sync</span>
+          </div>
+          <p>If hosted on Vercel, click below to link your live Vercel URL directly with Telegram's Webhook API so your bot responds 24/7 in the cloud.</p>
+          <div style="margin-top: 12px; display: flex; gap: 10px; align-items: center;">
+            <button class="btn btn-sm btn-primary" id="syncWebhookBtn">
+              <i data-lucide="zap"></i> Register Webhook Now
+            </button>
+            <span id="webhookStatusFeedback" style="font-size: 0.8rem; color: #a5b4fc;"></span>
+          </div>
+        </div>
+
         <div class="env-item">
           <div class="env-item-header">
             <strong>1. Telegram Bot Token</strong>

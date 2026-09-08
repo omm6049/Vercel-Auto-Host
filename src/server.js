@@ -4,7 +4,13 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
-import { initTelegramBot, deploymentHistory } from './services/telegramBot.js';
+import {
+  initTelegramBot,
+  botInstance,
+  deploymentHistory,
+  setBotWebhook,
+  getBotWebhookInfo
+} from './services/telegramBot.js';
 import { deployToVercel, verifyVercelCredentials, sanitizeProjectName } from './services/vercel.js';
 
 // Load environment variables
@@ -30,6 +36,58 @@ app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 // Serve static web dashboard
 app.use(express.static(path.join(rootDir, 'public')));
 
+// Initialize bot on startup
+initTelegramBot();
+
+// =========================================================================
+// Telegram Webhook Endpoints (For Vercel Serverless 24/7 Hosting)
+// =========================================================================
+
+// Endpoint for receiving updates from Telegram
+app.post('/api/webhook', (req, res) => {
+  try {
+    if (botInstance && req.body) {
+      botInstance.processUpdate(req.body);
+    }
+    res.status(200).send('OK');
+  } catch (err) {
+    console.error('[Webhook Error]:', err.message);
+    res.status(200).send('OK'); // Always return 200 to Telegram
+  }
+});
+
+// Endpoint to set Webhook URL with Telegram
+app.post('/api/set-webhook', async (req, res) => {
+  try {
+    const hostUrl = req.body.url || (req.headers['x-forwarded-host'] ? `https://${req.headers['x-forwarded-host']}` : `http://localhost:${PORT}`);
+    const result = await setBotWebhook(hostUrl);
+    res.json({
+      success: true,
+      result,
+      webhookUrl: `${hostUrl.replace(/\/+$/, '')}/api/webhook`
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.response?.data?.description || err.message
+    });
+  }
+});
+
+// Endpoint to check Webhook Info
+app.get('/api/webhook-info', async (req, res) => {
+  try {
+    const info = await getBotWebhookInfo();
+    res.json(info);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// =========================================================================
+// General API Endpoints
+// =========================================================================
+
 // API: System Status
 app.get('/api/status', async (req, res) => {
   const vercelAuth = await verifyVercelCredentials();
@@ -42,11 +100,15 @@ app.get('/api/status', async (req, res) => {
     process.env.BLOB_READ_WRITE_TOKEN !== 'your_blob_token_here'
   );
 
+  const isVercelServerless = process.env.VERCEL === '1' || process.env.USE_WEBHOOK === 'true';
+
   res.json({
     status: 'online',
     timestamp: new Date().toISOString(),
+    isVercel: isVercelServerless,
     telegram: {
       configured: hasTelegramToken,
+      mode: isVercelServerless ? 'Webhook (Serverless)' : 'Long Polling',
       status: hasTelegramToken ? 'active' : 'token_missing'
     },
     vercel: {
@@ -70,7 +132,7 @@ app.get('/api/history', (req, res) => {
   });
 });
 
-// API: Web Direct Deployment (Multer or JSON)
+// API: Web Direct Deployment
 app.post(
   '/api/deploy',
   upload.fields([
@@ -85,7 +147,6 @@ app.post(
       let cssContent = req.body.cssContent || '';
       let jsContent = req.body.jsContent || '';
 
-      // If files uploaded via form-data
       if (req.files?.htmlFile?.[0]) {
         htmlContent = req.files.htmlFile[0].buffer.toString('utf-8');
       }
@@ -136,9 +197,11 @@ app.post(
   }
 );
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`🌐 [Server]: Vercel Auto Host Web Dashboard is live at http://localhost:${PORT}`);
-  // Start Telegram Bot
-  initTelegramBot();
-});
+// Start server if not running purely as serverless function
+if (process.env.VERCEL !== '1') {
+  app.listen(PORT, () => {
+    console.log(`🌐 [Server]: Vercel Auto Host Web Dashboard is live at http://localhost:${PORT}`);
+  });
+}
+
+export default app;
