@@ -151,8 +151,16 @@ export async function deployToVercel({ projectName, htmlContent, cssContent, jsC
     });
 
     const deployment = response.data;
-    const directDeploymentUrl = `https://${deployment.url}`;
-    const canonicalAppUrl = `https://${cleanName}.vercel.app`;
+    const directDeploymentUrl = deployment.url ? `https://${deployment.url}` : `https://${cleanName}.vercel.app`;
+    
+    // Safely determine canonical URL:
+    // If Vercel provided an assigned alias, use it; otherwise fallback to the direct deployment URL
+    let canonicalAppUrl = directDeploymentUrl;
+    if (Array.isArray(deployment.alias) && deployment.alias.length > 0) {
+      canonicalAppUrl = `https://${deployment.alias[0]}`;
+    } else if (Array.isArray(deployment.aliases) && deployment.aliases.length > 0) {
+      canonicalAppUrl = `https://${deployment.aliases[0]}`;
+    }
 
     return {
       success: true,
@@ -161,7 +169,7 @@ export async function deployToVercel({ projectName, htmlContent, cssContent, jsC
       state: deployment.readyState || deployment.status || 'READY',
       canonicalUrl: canonicalAppUrl,
       directUrl: directDeploymentUrl,
-      alias: deployment.alias || [cleanName + '.vercel.app'],
+      alias: deployment.alias || (canonicalAppUrl ? [canonicalAppUrl.replace('https://', '')] : []),
       createdAt: deployment.createdAt || Date.now()
     };
   } catch (error) {
