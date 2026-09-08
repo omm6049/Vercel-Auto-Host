@@ -212,7 +212,12 @@ function initDropzones() {
   if (zipDropzone && zipInput) {
     const handleZip = (file) => {
       if (!file) return;
-      if (!file.name.toLowerCase().endsWith('.zip')) {
+      const isZip = file.name.toLowerCase().endsWith('.zip') ||
+                    file.type === 'application/zip' ||
+                    file.type === 'application/x-zip-compressed' ||
+                    file.type === 'multipart/x-zip';
+      
+      if (!isZip) {
         showToast('Please upload a .ZIP archive file.', true);
         return;
       }
@@ -222,7 +227,17 @@ function initDropzones() {
       zipDropzone.classList.add('file-loaded');
       zipName.textContent = file.name;
       zipSize.textContent = `${formatBytes(file.size)} • ZIP Archive ready for auto-extraction`;
-      showToast(`Loaded ${file.name} successfully!`);
+
+      // Auto-suggest project name from zip filename if empty
+      const nameInput = document.getElementById('projectNameInput');
+      if (nameInput && !nameInput.value.trim()) {
+        const baseName = file.name.replace(/\.[^/.]+$/, '').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 30);
+        if (baseName) {
+          nameInput.value = baseName;
+        }
+      }
+
+      showToast(`Loaded "${file.name}" successfully!`);
     };
 
     zipInput.addEventListener('change', (e) => {
@@ -476,19 +491,25 @@ function initFormHandler() {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
 
-    const projectName = document.getElementById('projectNameInput').value.trim();
+    const projectNameInput = document.getElementById('projectNameInput');
+    let projectName = projectNameInput ? projectNameInput.value.trim() : '';
     if (!projectName) {
-      showToast('Please enter a website name.', true);
-      return;
+      projectName = `site-${Math.random().toString(36).substring(2, 7)}`;
     }
 
-    if (appState.uploadMode === 'ZIP' && !appState.zipFile) {
-      showToast('Please drop or select a project .ZIP file first.', true);
-      return;
+    const zipInputEl = document.getElementById('zipFileInput');
+    const htmlInputEl = document.getElementById('htmlFileInput');
+
+    const zipFile = appState.zipFile || zipInputEl?.files?.[0];
+    let htmlContent = appState.htmlContent;
+    if (!htmlContent && htmlInputEl?.files?.[0]) {
+      try {
+        htmlContent = await htmlInputEl.files[0].text();
+      } catch {}
     }
 
-    if (appState.uploadMode === 'CLASSIC' && !appState.htmlContent) {
-      showToast('Please upload or provide index.html file first.', true);
+    if (!zipFile && !htmlContent) {
+      showToast('Please select or drop your .ZIP project archive (or index.html) first.', true);
       return;
     }
 
@@ -499,7 +520,7 @@ function initFormHandler() {
     progressBar.style.width = '20%';
     progressBar.style.background = 'var(--gradient-primary)';
     statusTitle.textContent = 'Preparing files & configuration...';
-    statusDesc.textContent = appState.uploadMode === 'ZIP' ? 'Extracting ZIP archive and packaging assets...' : 'Connecting styles and scripts...';
+    statusDesc.textContent = zipFile ? 'Extracting ZIP archive and packaging assets...' : 'Connecting styles and scripts...';
 
     const updateStep = (percent, title, desc) => {
       progressBar.style.width = `${percent}%`;
@@ -511,26 +532,28 @@ function initFormHandler() {
       setTimeout(() => updateStep(50, 'Configuring Vercel Environment...', 'Setting up environment variables and uploading to Vercel API...'), 600);
 
       let zipBase64 = null;
-      if (appState.uploadMode === 'ZIP' && appState.zipFile) {
+      if (zipFile) {
         zipBase64 = await new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => {
             const res = reader.result;
-            const b64 = typeof res === 'string' ? res.split(',')[1] || res : '';
+            const b64 = typeof res === 'string' && res.includes(',') ? res.split(',')[1] : res;
             resolve(b64);
           };
           reader.onerror = reject;
-          reader.readAsDataURL(appState.zipFile);
+          reader.readAsDataURL(zipFile);
         });
       }
 
+      const envText = appState.envContent || document.getElementById('envTextInput')?.value || '';
+
       const payload = {
         projectName,
-        envContent: appState.envContent || '',
+        envContent: envText,
         zipBase64,
-        htmlContent: appState.uploadMode === 'CLASSIC' ? appState.htmlContent : '',
-        cssContent: appState.uploadMode === 'CLASSIC' ? appState.cssContent : '',
-        jsContent: appState.uploadMode === 'CLASSIC' ? appState.jsContent : ''
+        htmlContent: !zipFile ? htmlContent : '',
+        cssContent: !zipFile ? appState.cssContent : '',
+        jsContent: !zipFile ? appState.jsContent : ''
       };
 
       const response = await fetch('/api/deploy', {

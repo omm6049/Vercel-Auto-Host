@@ -82,4 +82,40 @@ if (!nestedExtracted.hasIndexHtml || nestedExtracted.files[0].file !== 'index.ht
 }
 console.log('✅ Nested ZIP normalization test passed!');
 
-console.log('\n🎉 ALL ZIP & .ENV TESTS PASSED SUCCESSFULLY!');
+// 4. Test Case-Insensitive INDEX.HTML Detection
+console.log('\n--- Test 4: Uppercase INDEX.HTML & index.htm Detection ---');
+const caseZip = new AdmZip();
+caseZip.addFile('INDEX.HTML', Buffer.from('<h1>Uppercase Index</h1>', 'utf-8'));
+caseZip.addFile('STYLE.CSS', Buffer.from('body{margin:0;}', 'utf-8'));
+
+const caseExtracted = extractZipToVercelFiles(caseZip.toBuffer());
+console.log('Case extracted files:', caseExtracted.files.map((f) => f.file));
+
+if (!caseExtracted.hasIndexHtml || !caseExtracted.files.some((f) => f.file === 'index.html')) {
+  console.error('❌ Failed Case-Insensitive INDEX.HTML assertion');
+  process.exit(1);
+}
+console.log('✅ Case-Insensitive INDEX.HTML test passed!');
+
+// 5. Test Serverless String / Buffer Body Parsing
+console.log('\n--- Test 5: Serverless Request Body Parsing Simulation ---');
+const samplePayload = {
+  projectName: 'test-app-2026',
+  zipBase64: zipBuffer.toString('base64'),
+  envContent: 'API_KEY=12345'
+};
+
+// String payload simulation (as received in Vercel Serverless if raw)
+const stringBody = JSON.stringify(samplePayload);
+let parsedBody = typeof stringBody === 'string' ? JSON.parse(stringBody) : stringBody;
+const cleanBase64 = parsedBody.zipBase64.includes(',') ? parsedBody.zipBase64.split(',')[1] : parsedBody.zipBase64;
+const decodedBuffer = Buffer.from(cleanBase64, 'base64');
+const serverlessExtract = extractZipToVercelFiles(decodedBuffer);
+
+if (!serverlessExtract.hasIndexHtml || serverlessExtract.fileCount !== extracted.fileCount) {
+  console.error('❌ Failed Serverless body parsing simulation assertion');
+  process.exit(1);
+}
+console.log('✅ Serverless Request Body Parsing simulation test passed!');
+
+console.log('\n🎉 ALL ZIP & .ENV TESTS PASSED SUCCESSFULLY (100%)!');

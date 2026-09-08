@@ -226,8 +226,8 @@ async function executeDeployment(bot, chatId, session, rawName) {
       `📦 *Files Deployed:* \`${result.fileCount || '3'} files\`\n` +
       `🔐 *Env Variables:* \`${result.envCount || 0} configured\`\n\n` +
       `🌐 *Live Website URL:*\n👉 [${result.canonicalUrl}](${result.canonicalUrl})\n\n` +
-      `⚡ *Direct Deployment Link:*\n👉 [${result.directUrl}](${result.directUrl})\n\n` +
-      `🚀 Tap the button below to test your live website!`,
+      `⚡ *Direct Preview Link:*\n👉 [${result.directUrl}](${result.directUrl})\n\n` +
+      `💡 *Mobile Tip:* If opening on mobile asks for Vercel login, disable _Vercel Authentication_ under *Project Settings ➔ Deployment Protection* in your Vercel Dashboard for 100% public direct access.`,
       {
         chat_id: chatId,
         message_id: deployingMsg.message_id,
@@ -397,7 +397,13 @@ export async function processIncomingUpdate(update) {
     const docName = (doc.file_name || '').toLowerCase();
 
     // Case A: ZIP Upload in AWAITING_SOURCE
-    if (docName.endsWith('.zip') || doc.mime_type === 'application/zip' || doc.mime_type === 'application/x-zip-compressed') {
+    if (
+      docName.endsWith('.zip') ||
+      doc.mime_type === 'application/zip' ||
+      doc.mime_type === 'application/x-zip-compressed' ||
+      doc.mime_type === 'multipart/x-zip' ||
+      doc.mime_type === 'application/octet-stream'
+    ) {
       try {
         const buffer = await downloadTelegramBufferWithProgress(bot, chatId, doc.file_id, doc.file_name || 'project.zip');
         const extracted = extractZipToVercelFiles(buffer);

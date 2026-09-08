@@ -152,7 +152,10 @@ app.post(
       let zipBuffer = null;
 
       if (req.body.zipBase64) {
-        zipBuffer = Buffer.from(req.body.zipBase64, 'base64');
+        const cleanBase64 = typeof req.body.zipBase64 === 'string' && req.body.zipBase64.includes(',')
+          ? req.body.zipBase64.split(',')[1]
+          : req.body.zipBase64;
+        zipBuffer = Buffer.from(cleanBase64, 'base64');
       } else if (req.files?.zipFile?.[0]) {
         zipBuffer = req.files.zipFile[0].buffer;
       }
@@ -176,7 +179,7 @@ app.post(
         });
       }
 
-      const cleanName = sanitizeProjectName(projectName);
+      const cleanName = sanitizeProjectName(projectName || `site-${Date.now().toString(36)}`);
 
       const result = await deployToVercel({
         projectName: cleanName,

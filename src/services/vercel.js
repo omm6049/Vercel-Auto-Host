@@ -137,13 +137,19 @@ export function extractZipToVercelFiles(zipBuffer) {
 
     let entryName = entry.entryName.replace(/\\/g, '/');
 
-    // Skip OS metadata / hidden files
-    if (entryName.startsWith('__MACOSX/') || entryName.includes('/.DS_Store') || entryName.startsWith('.DS_Store')) {
+    // Skip OS metadata / hidden files / thumbs
+    if (
+      entryName.startsWith('__MACOSX/') ||
+      entryName.includes('/.DS_Store') ||
+      entryName.startsWith('.DS_Store') ||
+      entryName.endsWith('Thumbs.db')
+    ) {
       continue;
     }
 
     // Strip leading slashes
     entryName = entryName.replace(/^\/+/, '');
+    if (!entryName) continue;
 
     const ext = entryName.split('.').pop()?.toLowerCase() || '';
     const isText = textExtensions.has(ext);
@@ -156,6 +162,7 @@ export function extractZipToVercelFiles(zipBuffer) {
         encoding: 'utf-8'
       });
     } else {
+      // Base64 encoding for images (JPG, PNG, HEIC, WEBP, GIF, etc.) and other binaries
       const base64Content = entry.getData().toString('base64');
       rawFiles.push({
         file: entryName,
@@ -165,27 +172,59 @@ export function extractZipToVercelFiles(zipBuffer) {
     }
   }
 
-  // Detect if files are nested inside a single root directory (e.g., "my-project/index.html")
+  // Check if index.html is directly at root (case-insensitive)
   let normalizedFiles = rawFiles;
-  const hasDirectIndex = rawFiles.some((f) => f.file === 'index.html' || f.file === 'index.htm');
+  let hasDirectIndex = normalizedFiles.some((f) => f.file.toLowerCase() === 'index.html' || f.file.toLowerCase() === 'index.htm');
 
-  if (!hasDirectIndex && rawFiles.length > 0) {
-    const firstSlashIndex = rawFiles[0].file.indexOf('/');
+  // If no root index.html, check if all files share a common folder OR if index.html is in a known subfolder
+  if (!hasDirectIndex && normalizedFiles.length > 0) {
+    // 1. Check if all files share a common parent folder
+    const firstSlashIndex = normalizedFiles[0].file.indexOf('/');
     if (firstSlashIndex !== -1) {
-      const potentialRoot = rawFiles[0].file.substring(0, firstSlashIndex);
-      const allShareRoot = rawFiles.every((f) => f.file.startsWith(potentialRoot + '/'));
+      const potentialRoot = normalizedFiles[0].file.substring(0, firstSlashIndex);
+      const allShareRoot = normalizedFiles.every((f) => f.file.startsWith(potentialRoot + '/'));
 
       if (allShareRoot) {
-        // Strip common parent folder
-        normalizedFiles = rawFiles.map((f) => ({
+        normalizedFiles = normalizedFiles.map((f) => ({
           ...f,
           file: f.file.substring(potentialRoot.length + 1)
         }));
+        hasDirectIndex = normalizedFiles.some((f) => f.file.toLowerCase() === 'index.html' || f.file.toLowerCase() === 'index.htm');
+      }
+    }
+
+    // 2. If still not found at root, find if there's an index.html in a subfolder (like dist/ or public/ or custom-folder/)
+    if (!hasDirectIndex) {
+      const nestedIndexFile = normalizedFiles.find((f) => f.file.toLowerCase().endsWith('/index.html') || f.file.toLowerCase().endsWith('/index.htm'));
+      if (nestedIndexFile) {
+        const lastSlash = nestedIndexFile.file.lastIndexOf('/');
+        const folderPrefix = nestedIndexFile.file.substring(0, lastSlash + 1);
+        
+        // Check if other files also reside in that same folder prefix
+        const folderFiles = normalizedFiles.filter((f) => f.file.startsWith(folderPrefix));
+        if (folderFiles.length >= normalizedFiles.length * 0.7) {
+          // Re-base files to this folder
+          normalizedFiles = normalizedFiles.map((f) => {
+            if (f.file.startsWith(folderPrefix)) {
+              return { ...f, file: f.file.substring(folderPrefix.length) };
+            }
+            return f;
+          });
+          hasDirectIndex = true;
+        }
       }
     }
   }
 
-  const finalHasIndex = normalizedFiles.some((f) => f.file === 'index.html' || f.file === 'index.htm');
+  // Normalize root index.html to lowercase 'index.html' so Vercel Edge CDN serves it cleanly
+  normalizedFiles = normalizedFiles.map((f) => {
+    if (f.file.toLowerCase() === 'index.html' || f.file.toLowerCase() === 'index.htm') {
+      return { ...f, file: 'index.html' };
+    }
+    return f;
+  });
+
+  const finalHasIndex = normalizedFiles.some((f) => f.file === 'index.html');
 
   return {
     files: normalizedFiles,
