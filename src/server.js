@@ -197,11 +197,26 @@ app.post(
   }
 );
 
-// Start server if not running purely as serverless function
-if (process.env.VERCEL !== '1') {
-  app.listen(PORT, () => {
-    console.log(`🌐 [Server]: Vercel Auto Host Web Dashboard is live at http://localhost:${PORT}`);
+// Function to start server with automatic port retry if busy
+function startServer(portToTry) {
+  const server = app.listen(portToTry, () => {
+    console.log(`🌐 [Server]: Vercel Auto Host Web Dashboard is live at http://localhost:${portToTry}`);
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`⚠️ [Port Busy]: Port ${portToTry} is already in use. Retrying on port ${Number(portToTry) + 1}...`);
+      startServer(Number(portToTry) + 1);
+    } else {
+      console.error('❌ Server error:', err);
+    }
   });
 }
 
+// Start server if not running purely as serverless function
+if (process.env.VERCEL !== '1') {
+  startServer(PORT);
+}
+
 export default app;
+
