@@ -809,6 +809,16 @@ function initAuthGate() {
     }
   };
 
+  // Safe JSON parsing helper to prevent syntax errors on HTML responses
+  const parseJsonResponse = async (res) => {
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { success: false, error: `Server error (${res.status})` };
+    }
+  };
+
   // Check existing session
   const checkAuthSession = async () => {
     const savedToken = localStorage.getItem('vercel_autohost_token');
@@ -821,8 +831,8 @@ function initAuthGate() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ token: savedToken })
         });
-        const data = await res.json();
-        if (data.valid) {
+        const data = await parseJsonResponse(res);
+        if (data && data.valid) {
           unlockApplication(savedUser || 'Authorized User', false);
           return;
         }
@@ -854,8 +864,8 @@ function initAuthGate() {
         const res = await fetch(`/api/auth/status?id=${encodeURIComponent(requestId)}`);
         if (!res.ok) return;
 
-        const data = await res.json();
-        if (!data.success || !data.request) return;
+        const data = await parseJsonResponse(res);
+        if (!data || !data.success || !data.request) return;
 
         const { status, token } = data.request;
 
@@ -904,9 +914,9 @@ function initAuthGate() {
           body: JSON.stringify({ name, reason })
         });
 
-        const data = await res.json();
-        if (!res.ok || !data.success) {
-          throw new Error(data.error || 'Failed to submit authentication request');
+        const data = await parseJsonResponse(res);
+        if (!res.ok || !data || !data.success) {
+          throw new Error(data?.error || 'Failed to submit authentication request');
         }
 
         // Switch to Waiting Radar
