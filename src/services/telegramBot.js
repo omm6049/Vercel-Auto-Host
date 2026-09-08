@@ -71,75 +71,108 @@ function saveRequestsToDisk() {
   } catch {}
 }
 
+const STATE_PIN_HEADER = '⚙️ Vercel Auto Host State Store:\n';
+
 /**
- * Syncs an access request to the global cloud store (cross-lambda sync)
+ * Saves or updates a request in the Telegram Global Pinned Store (100% cross-lambda synchronization)
  */
-async function syncRequestToCloud(record) {
+async function syncRequestToTelegramStore(record) {
   if (!record || !record.id) return;
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const adminChatId = Array.from(registeredAdminChatIds)[0] || DEFAULT_ADMIN_CHAT_ID;
+  if (!token || !adminChatId) return;
+
   try {
-    if (!record._cloudId) {
-      // Create new cloud object
-      const res = await axios.post(CLOUD_SYNC_URL, {
-        name: `autohost_auth_${record.id}`,
-        data: {
-          id: record.id,
-          name: record.name,
-          reason: record.reason,
-          ip: record.ip,
-          status: record.status,
-          token: record.token || null,
-          approvedBy: record.approvedBy || null,
-          createdAt: record.createdAt || Date.now(),
-          updatedAt: Date.now()
-        }
-      }, { timeout: 3500 });
-      if (res.data?.id) {
-        record._cloudId = res.data.id;
-        accessRequests.set(record.id, record);
-        saveRequestsToDisk();
+    const chatInfo = await axios.get(`https://api.telegram.org/bot${token}/getChat?chat_id=${adminChatId}`, { timeout: 3500 });
+    const pinned = chatInfo.data?.result?.pinned_message;
+
+    let store = {};
+    let pinnedMsgId = null;
+
+    if (pinned && pinned.text && pinned.text.startsWith('⚙️ Vercel Auto Host State Store:')) {
+      pinnedMsgId = pinned.message_id;
+      try {
+        const rawJson = pinned.text.replace(STATE_PIN_HEADER, '');
+        store = JSON.parse(rawJson);
+      } catch {}
+    }
+
+    // Update store with current record
+    store[record.id] = {
+      id: record.id,
+      name: record.name,
+      reason: record.reason,
+      ip: record.ip,
+      time: record.time,
+      device: record.device,
+      status: record.status,
+      token: record.token || null,
+      approvedBy: record.approvedBy || null,
+      updatedAt: Date.now()
+    };
+
+    // Trim store to keep recent 30 requests
+    const keys = Object.keys(store);
+    if (keys.length > 30) {
+      for (const oldKey of keys.slice(0, keys.length - 30)) {
+        delete store[oldKey];
       }
-    } else {
-      // Update existing cloud object
-      await axios.put(`${CLOUD_SYNC_URL}/${record._cloudId}`, {
-        name: `autohost_auth_${record.id}`,
-        data: {
-          id: record.id,
-          name: record.name,
-          reason: record.reason,
-          ip: record.ip,
-          status: record.status,
-          token: record.token || null,
-          approvedBy: record.approvedBy || null,
-          createdAt: record.createdAt || Date.now(),
-          updatedAt: Date.now()
-        }
+    }
+
+    const payloadText = STATE_PIN_HEADER + JSON.stringify(store);
+
+    if (pinnedMsgId) {
+      await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
+        chat_id: adminChatId,
+        message_id: pinnedMsgId,
+        text: payloadText
       }, { timeout: 3500 });
+    } else {
+      const msg = await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+        chat_id: adminChatId,
+        text: payloadText,
+        disable_notification: true
+      }, { timeout: 3500 });
+
+      if (msg.data?.result?.message_id) {
+        await axios.post(`https://api.telegram.org/bot${token}/pinChatMessage`, {
+          chat_id: adminChatId,
+          message_id: msg.data.result.message_id,
+          disable_notification: true
+        }, { timeout: 3500 });
+      }
     }
   } catch (err) {
-    // Graceful fallback - cloud sync error should never break local flow
-    console.warn('[Cloud Sync Notice]:', err.message);
+    console.warn('[Telegram Global Store Sync Notice]:', err.message);
   }
 }
 
 /**
- * Fetches status from cloud if pending or not in local memory
+ * Fetches status from Telegram Global Pinned Store if not in local memory or pending
  */
-async function fetchRequestFromCloud(requestId) {
-  if (!requestId) return null;
+async function fetchRequestFromTelegramStore(requestId) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const adminChatId = Array.from(registeredAdminChatIds)[0] || DEFAULT_ADMIN_CHAT_ID;
+  if (!token || !adminChatId || !requestId) return null;
+
   try {
-    const local = accessRequests.get(requestId);
-    if (local && local._cloudId) {
-      const res = await axios.get(`${CLOUD_SYNC_URL}/${local._cloudId}`, { timeout: 3000 });
-      if (res.data?.data) {
-        const cloudData = { ...res.data.data, _cloudId: res.data.id };
-        accessRequests.set(requestId, cloudData);
+    const chatInfo = await axios.get(`https://api.telegram.org/bot${token}/getChat?chat_id=${adminChatId}`, { timeout: 3000 });
+    const pinned = chatInfo.data?.result?.pinned_message;
+
+    if (pinned && pinned.text && pinned.text.startsWith('⚙️ Vercel Auto Host State Store:')) {
+      const rawJson = pinned.text.replace(STATE_PIN_HEADER, '');
+      const store = JSON.parse(rawJson);
+      if (store && store[requestId]) {
+        const item = store[requestId];
+        accessRequests.set(requestId, item);
         saveRequestsToDisk();
-        return cloudData;
+        return item;
       }
     }
-  } catch {}
+  } catch (err) {}
   return null;
 }
+
 
 /**
  * Loads and saves admin chat IDs to /tmp
@@ -249,8 +282,8 @@ export async function createAccessRequest({ name, reason, ip, clientTime, client
   accessRequests.set(requestId, record);
   saveRequestsToDisk();
 
-  // Sync to global cloud store for multi-container lambdas
-  syncRequestToCloud(record).catch(() => {});
+  // Sync to global store for multi-container lambdas
+  syncRequestToTelegramStore(record).catch(() => {});
 
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const adminChatIds = await discoverAdminChatIds();
@@ -319,15 +352,15 @@ export function getAccessRequestStatus(requestId) {
 }
 
 /**
- * Returns current status of an access request with asynchronous cloud verification.
+ * Returns current status of an access request with asynchronous store verification.
  */
 export async function getAccessRequestStatusAsync(requestId) {
   loadRequestsFromDisk();
   let record = accessRequests.get(requestId);
 
   if (!record || record.status === 'PENDING') {
-    const cloudRecord = await fetchRequestFromCloud(requestId);
-    if (cloudRecord) record = cloudRecord;
+    const storedRecord = await fetchRequestFromTelegramStore(requestId);
+    if (storedRecord) record = storedRecord;
   }
 
   if (record) return record;
@@ -375,8 +408,8 @@ export async function approveAccessRequest(requestId, approvedBy = 'Admin') {
   accessRequests.set(requestId, record);
   saveRequestsToDisk();
 
-  // Sync to cloud store
-  await syncRequestToCloud(record);
+  // Sync to global store
+  await syncRequestToTelegramStore(record);
 
   return record;
 }
@@ -406,8 +439,8 @@ export async function rejectAccessRequest(requestId, rejectedBy = 'Admin') {
   accessRequests.set(requestId, record);
   saveRequestsToDisk();
 
-  // Sync to cloud store
-  await syncRequestToCloud(record);
+  // Sync to global store
+  await syncRequestToTelegramStore(record);
 
   return record;
 }
