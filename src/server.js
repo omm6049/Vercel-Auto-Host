@@ -10,6 +10,7 @@ import {
   deploymentHistory,
   setBotWebhook,
   getBotWebhookInfo,
+  processIncomingUpdate,
   createAccessRequest,
   getAccessRequestStatus,
   getAccessRequestStatusAsync,
@@ -54,16 +55,27 @@ initTelegramBot();
 // =========================================================================
 
 // Endpoint for receiving updates from Telegram
-app.post('/api/webhook', (req, res) => {
+app.post('/api/webhook', async (req, res) => {
   try {
-    if (botInstance && req.body) {
-      botInstance.processUpdate(req.body);
+    let body = req.body;
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch {}
+    }
+    if (body) {
+      await processIncomingUpdate(body);
     }
     res.status(200).send('OK');
   } catch (err) {
     console.error('[Webhook Error]:', err.message);
     res.status(200).send('OK'); // Always return 200 to Telegram
   }
+});
+
+app.get('/api/webhook', (req, res) => {
+  res.status(200).json({
+    status: 'online',
+    message: 'Telegram Webhook handler is active on Vercel'
+  });
 });
 
 // Endpoint to set Webhook URL with Telegram
