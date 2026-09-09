@@ -754,7 +754,7 @@ function initModals() {
 }
 
 /**
- * Visitor Access Request & Telegram Bot 1-Click Approval System
+ * Visitor Access Request & Telegram Bot 1-Click Approval System with Real-Time IP Binding & Reactivation
  */
 function initAuthGate() {
   const authSection = document.getElementById('authGateSection');
@@ -772,10 +772,11 @@ function initAuthGate() {
   const authRetryBtn = document.getElementById('authRetryBtn');
   const approvedGreetingText = document.getElementById('approvedGreetingText');
 
-  let activeRequestId = null;
-  let activeCloudId = null;
+  let activeRequestId = localStorage.getItem('vercel_autohost_requestId') || null;
+  let activeCloudId = localStorage.getItem('vercel_autohost_cloudId') || null;
   let authPollTimer = null;
   let activeHeartbeatTimer = null;
+  let blockedPollTimer = null;
 
   const stopPolling = () => {
     if (authPollTimer) {
@@ -791,13 +792,17 @@ function initAuthGate() {
     }
   };
 
+  const stopBlockedPolling = () => {
+    if (blockedPollTimer) {
+      clearInterval(blockedPollTimer);
+      blockedPollTimer = null;
+    }
+  };
+
   const triggerRealtimeBlock = (reason = 'Your authentication request has been blocked by the Admin in real-time.') => {
     stopPolling();
     stopHeartbeat();
     localStorage.removeItem('vercel_autohost_token');
-    localStorage.removeItem('vercel_autohost_user');
-    localStorage.removeItem('vercel_autohost_requestId');
-    localStorage.removeItem('vercel_autohost_cloudId');
 
     if (authSessionPill) authSessionPill.classList.add('hidden');
     if (launchpadCockpit) launchpadCockpit.classList.add('locked-cockpit');
@@ -815,10 +820,13 @@ function initAuthGate() {
 
     showToast('🚫 Request Blocked: Your access has been blocked by the Admin in real-time.', true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    startBlockedPolling();
   };
 
   const lockApplication = () => {
     stopHeartbeat();
+    stopBlockedPolling();
     if (authSection) authSection.classList.remove('hidden');
     if (authForm) authForm.classList.remove('hidden');
     if (authRadarBox) authRadarBox.classList.add('hidden');
@@ -829,48 +837,10 @@ function initAuthGate() {
     if (window.lucide) window.lucide.createIcons();
   };
 
-  const startHeartbeat = () => {
-    stopHeartbeat();
-    activeHeartbeatTimer = setInterval(async () => {
-      const token = localStorage.getItem('vercel_autohost_token');
-      const reqId = localStorage.getItem('vercel_autohost_requestId') || activeRequestId;
-      const cId = localStorage.getItem('vercel_autohost_cloudId') || activeCloudId;
-
-      if (!token) {
-        stopHeartbeat();
-        return;
-      }
-
-      try {
-        // 1. Verify token validity via /api/auth/verify
-        const verifyRes = await fetch('/api/auth/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token })
-        });
-        const verifyData = await parseJsonResponse(verifyRes);
-        if (!verifyData || !verifyData.valid) {
-          triggerRealtimeBlock('Your authentication access has been blocked by the Admin in real-time.');
-          return;
-        }
-
-        // 2. Check request status via /api/auth/status if reqId is available
-        if (reqId) {
-          const statusUrl = `/api/auth/status?id=${encodeURIComponent(reqId)}${cId ? `&cloudId=${encodeURIComponent(cId)}` : ''}`;
-          const statusRes = await fetch(statusUrl);
-          const statusData = await parseJsonResponse(statusRes);
-          if (statusData && statusData.request && statusData.request.status === 'REJECTED') {
-            triggerRealtimeBlock('Your authentication access has been blocked by the Admin in real-time.');
-            return;
-          }
-        }
-      } catch (err) {
-        // Network retry on next tick
-      }
-    }, 1500);
-  };
-
   const unlockApplication = (userName = 'Authorized Visitor', animate = true) => {
+    stopPolling();
+    stopBlockedPolling();
+
     if (authSessionUser) authSessionUser.textContent = userName;
     if (authSessionPill) authSessionPill.classList.remove('hidden');
 
@@ -888,18 +858,21 @@ function initAuthGate() {
 
       setTimeout(() => {
         if (authSection) authSection.classList.add('hidden');
+        if (authApprovedBox) authApprovedBox.classList.add('hidden');
+        if (authRejectedBox) authRejectedBox.classList.add('hidden');
         if (launchpadCockpit) launchpadCockpit.classList.remove('locked-cockpit');
         if (window.lucide) window.lucide.createIcons();
         showToast(`🎉 Welcome, ${userName}! Launchpad unlocked.`);
       }, 1200);
     } else {
       if (authSection) authSection.classList.add('hidden');
+      if (authApprovedBox) authApprovedBox.classList.add('hidden');
+      if (authRejectedBox) authRejectedBox.classList.add('hidden');
       if (launchpadCockpit) launchpadCockpit.classList.remove('locked-cockpit');
       if (window.lucide) window.lucide.createIcons();
     }
   };
 
-  // Safe JSON parsing helper to prevent syntax errors on HTML responses
   const parseJsonResponse = async (res) => {
     const text = await res.text();
     try {
@@ -909,34 +882,138 @@ function initAuthGate() {
     }
   };
 
-  // Check existing session
+  const startBlockedPolling = () => {
+    stopBlockedPolling();
+    blockedPollTimer = setInterval(async () => {
+      try {
+        const reqId = localStorage.getItem('vercel_autohost_requestId') || activeRequestId;
+        const checkUrl = `/api/auth/check-ip?${reqId ? `id=${encodeURIComponent(reqId)}&` : ''}${detectedClientIp ? `ip=${encodeURIComponent(detectedClientIp)}` : ''}`;
+        const res = await fetch(checkUrl);
+        if (!res.ok) return;
+
+        const data = await parseJsonResponse(res);
+        if (data && data.matched && data.request) {
+          if (data.request.status === 'APPROVED' && data.request.token) {
+            stopBlockedPolling();
+            localStorage.setItem('vercel_autohost_token', data.request.token);
+            localStorage.setItem('vercel_autohost_user', data.request.name || 'Authorized Visitor');
+            localStorage.setItem('vercel_autohost_requestId', data.request.id);
+            unlockApplication(data.request.name || 'Authorized Visitor', true);
+            showToast('🎉 Access Reactivated by Admin! Launchpad unlocked.');
+          }
+        }
+      } catch (err) {}
+    }, 1500);
+  };
+
+  const startHeartbeat = () => {
+    stopHeartbeat();
+    activeHeartbeatTimer = setInterval(async () => {
+      const token = localStorage.getItem('vercel_autohost_token');
+      const reqId = localStorage.getItem('vercel_autohost_requestId') || activeRequestId;
+
+      if (!token) {
+        stopHeartbeat();
+        return;
+      }
+
+      try {
+        const verifyRes = await fetch('/api/auth/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token })
+        });
+        const verifyData = await parseJsonResponse(verifyRes);
+        if (!verifyData || !verifyData.valid) {
+          triggerRealtimeBlock('Your authentication access has been blocked by the Admin in real-time.');
+          return;
+        }
+
+        const checkUrl = `/api/auth/check-ip?${reqId ? `id=${encodeURIComponent(reqId)}&` : ''}${detectedClientIp ? `ip=${encodeURIComponent(detectedClientIp)}` : ''}`;
+        const statusRes = await fetch(checkUrl);
+        const statusData = await parseJsonResponse(statusRes);
+        if (statusData && statusData.matched && statusData.request && statusData.request.status === 'REJECTED') {
+          triggerRealtimeBlock('Your authentication access has been blocked by the Admin in real-time.');
+          return;
+        }
+      } catch (err) {}
+    }, 1500);
+  };
+
   const checkAuthSession = async () => {
     const savedToken = localStorage.getItem('vercel_autohost_token');
     const savedUser = localStorage.getItem('vercel_autohost_user');
+    const savedReqId = localStorage.getItem('vercel_autohost_requestId');
 
-    if (savedToken) {
-      try {
-        const res = await fetch('/api/auth/verify', {
+    try {
+      const ipCheckUrl = `/api/auth/check-ip?${savedReqId ? `id=${encodeURIComponent(savedReqId)}&` : ''}${detectedClientIp ? `ip=${encodeURIComponent(detectedClientIp)}` : ''}`;
+      const ipRes = await fetch(ipCheckUrl);
+      const ipData = await parseJsonResponse(ipRes);
+
+      if (ipData && ipData.matched && ipData.request) {
+        const { status, token, name, id } = ipData.request;
+
+        if (status === 'APPROVED' && token) {
+          localStorage.setItem('vercel_autohost_token', token);
+          localStorage.setItem('vercel_autohost_user', name || savedUser || 'Authorized Visitor');
+          localStorage.setItem('vercel_autohost_requestId', id);
+          activeRequestId = id;
+          unlockApplication(name || savedUser || 'Authorized Visitor', false);
+          return;
+        }
+
+        if (status === 'REJECTED') {
+          activeRequestId = id;
+          localStorage.setItem('vercel_autohost_requestId', id);
+          triggerRealtimeBlock('Your device IP / access request is blocked by the Admin.');
+          return;
+        }
+
+        if (status === 'PENDING') {
+          activeRequestId = id;
+          authForm.classList.add('hidden');
+          authRadarBox.classList.remove('hidden');
+          startPolling(id, name || 'Visitor');
+          return;
+        }
+      }
+
+      if (savedToken) {
+        const verifyRes = await fetch('/api/auth/verify', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ token: savedToken })
         });
-        const data = await parseJsonResponse(res);
-        if (data && data.valid) {
+        const verifyData = await parseJsonResponse(verifyRes);
+        if (verifyData && verifyData.valid) {
           unlockApplication(savedUser || 'Authorized User', false);
           return;
         }
-      } catch (err) {
-        console.warn('Session verification notice:', err);
       }
+    } catch (err) {
+      console.warn('Session verification notice:', err);
     }
-    // Default: Locked
+
     lockApplication();
   };
 
+  let detectedClientIp = null;
+  (async () => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      const res = await fetch('https://api64.ipify.org?format=json', { signal: controller.signal });
+      clearTimeout(timeoutId);
+      const data = await res.json();
+      if (data && data.ip) {
+        detectedClientIp = data.ip;
+        checkAuthSession();
+      }
+    } catch {}
+  })();
+
   checkAuthSession();
 
-  // Start status polling with cloudId and requestId support
   const startPolling = (requestId, name, cloudId = null) => {
     stopPolling();
     activeRequestId = requestId;
@@ -971,20 +1048,6 @@ function initAuthGate() {
     }, 1500);
   };
 
-  // Fast background public IP discovery
-  let detectedClientIp = null;
-  (async () => {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
-      const res = await fetch('https://api64.ipify.org?format=json', { signal: controller.signal });
-      clearTimeout(timeoutId);
-      const data = await res.json();
-      if (data && data.ip) detectedClientIp = data.ip;
-    } catch {}
-  })();
-
-  // Device & OS detection
   const getDeviceInfo = () => {
     const ua = navigator.userAgent || '';
     let os = 'Unknown Device';
@@ -1003,7 +1066,6 @@ function initAuthGate() {
     return `${os} • ${browser}`;
   };
 
-  // Handle Form Submission
   if (authForm) {
     authForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1052,7 +1114,6 @@ function initAuthGate() {
           throw new Error(data?.error || 'Failed to submit authentication request');
         }
 
-        // Switch to Waiting Radar
         authForm.classList.add('hidden');
         authRadarBox.classList.remove('hidden');
         startPolling(data.requestId, name, data.cloudId || null);
@@ -1069,8 +1130,6 @@ function initAuthGate() {
     });
   }
 
-
-  // Handle Simulate Approval Button (Dev / Testing)
   if (authSimulateApproveBtn) {
     authSimulateApproveBtn.addEventListener('click', async () => {
       if (!activeRequestId) return;
@@ -1092,7 +1151,6 @@ function initAuthGate() {
     });
   }
 
-  // Handle Cancel Request Button
   if (authCancelRequestBtn) {
     authCancelRequestBtn.addEventListener('click', () => {
       stopPolling();
@@ -1103,15 +1161,14 @@ function initAuthGate() {
     });
   }
 
-  // Handle Retry Button on Rejection
   if (authRetryBtn) {
     authRetryBtn.addEventListener('click', () => {
+      stopBlockedPolling();
       authRejectedBox.classList.add('hidden');
       authForm.classList.remove('hidden');
     });
   }
 
-  // Handle Logout Button
   if (authLogoutBtn) {
     authLogoutBtn.addEventListener('click', async () => {
       const token = localStorage.getItem('vercel_autohost_token');

@@ -9,6 +9,8 @@ import {
   getActiveUsersList,
   getBlockedUsersList,
   verifyAccessToken,
+  getAccessStatusByIpAsync,
+  normalizeIp,
   ADMIN_KEYBOARD_SHORTCUTS,
   processIncomingUpdate
 } from '../src/services/telegramBot.js';
@@ -105,13 +107,51 @@ async function runUserManagementTests() {
   assert.strictEqual(verifyAccessToken(aliceToken), false, 'Deleted user token must be revoked');
   console.log('✅ Removed Alice record and revoked session token');
 
-  // Clean up Bob
+  // 7. Test Real-Time IP Binding: Auto-Approval & Auto-Block by IP Address
+  console.log('\n--- Test 7: IP Binding, Auto-Approval & Auto-Block Real-Time Recognition ---');
+  // Seed User 3 from IP 142.250.190.46
+  const user3 = await createAccessRequest({
+    name: 'Charlie Production',
+    reason: 'Production web app',
+    ip: '142.250.190.46'
+  });
+  // Approve user 3
+  const approvedCharlie = await approveAccessRequest(user3.id, 'Admin');
+  assert.strictEqual(approvedCharlie.status, 'APPROVED');
+
+  // Query by IP address
+  const ipMatchApproved = await getAccessStatusByIpAsync('142.250.190.46');
+  assert(ipMatchApproved, 'Should find approved user by IP address');
+  assert.strictEqual(ipMatchApproved.status, 'APPROVED');
+  assert(ipMatchApproved.token && ipMatchApproved.token.startsWith('tok.'), 'Should have valid active token for auto-login');
+  console.log('✅ IP Recognition (APPROVED): Automatically authorized IP 142.250.190.46 directly to deployment cockpit with token');
+
+  // Block user 3
+  const blockedCharlie = await rejectAccessRequest(user3.id, 'Admin');
+  assert.strictEqual(blockedCharlie.status, 'REJECTED');
+
+  // Query by IP address after block
+  const ipMatchBlocked = await getAccessStatusByIpAsync('142.250.190.46');
+  assert(ipMatchBlocked, 'Should find blocked user by IP address');
+  assert.strictEqual(ipMatchBlocked.status, 'REJECTED');
+  console.log('✅ IP Recognition (REJECTED): Automatically blocked IP 142.250.190.46 directly to Request Blocked screen');
+
+  // Reactivate user 3 from blocked state
+  const reactivatedCharlie = await approveAccessRequest(user3.id, 'Admin');
+  assert.strictEqual(reactivatedCharlie.status, 'APPROVED');
+  const ipMatchReactivated = await getAccessStatusByIpAsync('142.250.190.46');
+  assert.strictEqual(ipMatchReactivated.status, 'APPROVED');
+  console.log('✅ IP Recognition (REACTIVATED): Automatically re-unlocked IP in real-time');
+
+  // Cleanup
+  await deleteAccessRequest(user3.id);
   await deleteAccessRequest(user2.cloudId || user2.id);
 
-  console.log('\n🎉 ALL USER MANAGEMENT & SHORTCUT DASHBOARD TESTS PASSED (100%)!\n');
+  console.log('\n🎉 ALL USER MANAGEMENT, SHORTCUT DASHBOARD & IP AUTO-LOGIN/BLOCK TESTS PASSED (100%)!\n');
 }
 
 runUserManagementTests().catch((err) => {
   console.error('❌ Test failed:', err);
   process.exit(1);
 });
+

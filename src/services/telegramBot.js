@@ -46,6 +46,21 @@ const EDGE_CONFIG_ID = process.env.EDGE_CONFIG_ID || 'ecfg_1pxbtp8zonmlvthxsjn9k
 const VERCEL_TOKEN = process.env.VERCEL_TOKEN;
 
 /**
+ * Normalizes an IP address (strips IPv6 prefixes, trims whitespace)
+ */
+export function normalizeIp(ip) {
+  if (!ip || typeof ip !== 'string') return '';
+  let clean = ip.trim();
+  if (clean.startsWith('::ffff:')) {
+    clean = clean.replace('::ffff:', '');
+  }
+  if (clean === '::1') {
+    clean = '127.0.0.1';
+  }
+  return clean;
+}
+
+/**
  * Reads a single record from Vercel Edge Config
  */
 async function getEdgeConfigRecord(id) {
@@ -105,7 +120,47 @@ export async function syncFromCloudStore() {
 }
 
 /**
- * Upserts a single access request record and updates the master list in Vercel Edge Config
+ * Looks up the latest visitor status by client IP address across Edge Config and local cache
+ */
+export async function getAccessStatusByIpAsync(rawIp) {
+  const ip = normalizeIp(rawIp);
+  if (!ip) return null;
+
+  loadRequestsFromDisk();
+
+  // 1. Direct Edge Config key lookup by IP
+  if (VERCEL_TOKEN && EDGE_CONFIG_ID) {
+    try {
+      const cleanIpKey = `ip_${ip.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+      const res = await axios.get(`https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/item/${encodeURIComponent(cleanIpKey)}`, {
+        headers: { Authorization: `Bearer ${VERCEL_TOKEN}` },
+        timeout: 3000
+      });
+      if (res.data && res.data.value) {
+        const cloudRecord = res.data.value;
+        accessRequests.set(cloudRecord.id, cloudRecord);
+        if (cloudRecord.status === 'REJECTED' && cloudRecord.token) {
+          revokedSessionTokens.add(cloudRecord.token);
+        }
+        saveRequestsToDisk();
+        return cloudRecord;
+      }
+    } catch {}
+  }
+
+  // 2. In-memory / disk lookup
+  const all = getAllAccessRequests();
+  const found = all.find(r => r && normalizeIp(r.ip) === ip);
+  if (found) return found;
+
+  // 3. Fallback: sync from Edge Config master list
+  await syncFromCloudStore();
+  const refreshed = getAllAccessRequests().find(r => r && normalizeIp(r.ip) === ip);
+  return refreshed || null;
+}
+
+/**
+ * Upserts a single access request record and updates the master list & IP index in Vercel Edge Config
  */
 export async function syncRecordToCloudStore(record) {
   if (!record || !record.id) return;
@@ -126,11 +181,21 @@ export async function syncRecordToCloudStore(record) {
     const allList = Array.from(map.values());
     const cleanKey = `req_${record.id.replace(/^req_/, '')}`;
 
+    const items = [
+      { operation: 'upsert', key: cleanKey, value: record },
+      { operation: 'upsert', key: 'master_list', value: allList }
+    ];
+
+    if (record.ip && record.ip !== 'Unknown') {
+      const cleanIp = normalizeIp(record.ip);
+      if (cleanIp) {
+        const cleanIpKey = `ip_${cleanIp.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+        items.push({ operation: 'upsert', key: cleanIpKey, value: record });
+      }
+    }
+
     await axios.patch(`https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/items`, {
-      items: [
-        { operation: 'upsert', key: cleanKey, value: record },
-        { operation: 'upsert', key: 'master_list', value: allList }
-      ]
+      items
     }, {
       headers: { Authorization: `Bearer ${VERCEL_TOKEN}`, 'Content-Type': 'application/json' },
       timeout: 3500
@@ -145,6 +210,7 @@ export async function syncRecordToCloudStore(record) {
  */
 export async function deleteRecordFromCloudStore(id) {
   if (!id) return;
+  let targetRecord = accessRequests.get(id);
   const map = new Map();
   for (const r of accessRequests.values()) {
     if (r && r.id && r.id !== id && r.cloudId !== id) map.set(r.id, r);
@@ -154,11 +220,20 @@ export async function deleteRecordFromCloudStore(id) {
 
   if (VERCEL_TOKEN && EDGE_CONFIG_ID) {
     try {
+      const items = [
+        { operation: 'delete', key: cleanKey },
+        { operation: 'upsert', key: 'master_list', value: allList }
+      ];
+      if (targetRecord && targetRecord.ip && targetRecord.ip !== 'Unknown') {
+        const cleanIp = normalizeIp(targetRecord.ip);
+        if (cleanIp) {
+          const cleanIpKey = `ip_${cleanIp.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+          items.push({ operation: 'delete', key: cleanIpKey });
+        }
+      }
+
       await axios.patch(`https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/items`, {
-        items: [
-          { operation: 'delete', key: cleanKey },
-          { operation: 'upsert', key: 'master_list', value: allList }
-        ]
+        items
       }, {
         headers: { Authorization: `Bearer ${VERCEL_TOKEN}`, 'Content-Type': 'application/json' },
         timeout: 3500
