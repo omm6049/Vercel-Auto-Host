@@ -41,55 +41,130 @@ const AUTH_SECRET = process.env.TELEGRAM_BOT_TOKEN || process.env.VERCEL_TOKEN |
 const STORE_DIR = os.tmpdir();
 const REQUESTS_STORE_FILE = path.join(STORE_DIR, 'vercel_autohost_requests.json');
 const ADMIN_CHATS_FILE = path.join(STORE_DIR, 'vercel_autohost_admins.json');
-const CLOUD_SYNC_URL = 'https://api.restful-api.dev/objects';
+
+const EDGE_CONFIG_ID = process.env.EDGE_CONFIG_ID || 'ecfg_1pxbtp8zonmlvthxsjn9klii7pvr';
+const VERCEL_TOKEN = process.env.VERCEL_TOKEN;
 
 /**
- * Creates a cloud sync object for cross-instance access request state sharing.
+ * Reads a single record from Vercel Edge Config
  */
-async function createCloudSyncRecord(record) {
+async function getEdgeConfigRecord(id) {
+  if (!VERCEL_TOKEN || !EDGE_CONFIG_ID || !id) return null;
   try {
-    const res = await axios.post(CLOUD_SYNC_URL, {
-      name: record.id,
-      data: record
-    }, { timeout: 3500 });
-    if (res.data && res.data.id) {
-      return res.data.id;
+    const cleanKey = `req_${id.replace(/^req_/, '')}`;
+    const res = await axios.get(`https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/item/${encodeURIComponent(cleanKey)}`, {
+      headers: { Authorization: `Bearer ${VERCEL_TOKEN}` },
+      timeout: 3000
+    });
+    if (res.data && res.data.value) {
+      return res.data.value;
     }
-  } catch (err) {
-    console.warn('[Cloud Sync Create Notice]:', err.message);
-  }
+  } catch (err) {}
   return null;
 }
 
 /**
- * Updates an existing cloud sync object by cloudId.
+ * Reads master requests list from Vercel Edge Config
  */
-async function updateCloudSyncRecord(cloudId, record) {
-  if (!cloudId) return;
+async function getEdgeConfigMasterList() {
+  if (!VERCEL_TOKEN || !EDGE_CONFIG_ID) return [];
   try {
-    await axios.put(`${CLOUD_SYNC_URL}/${cloudId}`, {
-      name: record.id,
-      data: record
-    }, { timeout: 3500 });
+    const res = await axios.get(`https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/item/master_list`, {
+      headers: { Authorization: `Bearer ${VERCEL_TOKEN}` },
+      timeout: 3000
+    });
+    if (res.data && Array.isArray(res.data.value)) {
+      return res.data.value;
+    }
+  } catch (err) {}
+  return [];
+}
+
+/**
+ * Synchronizes local memory and disk cache from Vercel Edge Config
+ */
+export async function syncFromCloudStore() {
+  loadRequestsFromDisk();
+  try {
+    const list = await getEdgeConfigMasterList();
+    if (Array.isArray(list) && list.length > 0) {
+      for (const item of list) {
+        if (item && item.id) {
+          accessRequests.set(item.id, item);
+          if (item.cloudId) {
+            accessRequests.set(item.cloudId, item);
+          }
+          if (item.status === 'REJECTED' && item.token) {
+            revokedSessionTokens.add(item.token);
+          }
+        }
+      }
+      saveRequestsToDisk();
+    }
+  } catch (err) {}
+}
+
+/**
+ * Upserts a single access request record and updates the master list in Vercel Edge Config
+ */
+export async function syncRecordToCloudStore(record) {
+  if (!record || !record.id) return;
+  
+  accessRequests.set(record.id, record);
+  if (record.cloudId) {
+    accessRequests.set(record.cloudId, record);
+  }
+  saveRequestsToDisk();
+
+  if (!VERCEL_TOKEN || !EDGE_CONFIG_ID) return;
+
+  try {
+    const map = new Map();
+    for (const r of accessRequests.values()) {
+      if (r && r.id) map.set(r.id, r);
+    }
+    const allList = Array.from(map.values());
+    const cleanKey = `req_${record.id.replace(/^req_/, '')}`;
+
+    await axios.patch(`https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/items`, {
+      items: [
+        { operation: 'upsert', key: cleanKey, value: record },
+        { operation: 'upsert', key: 'master_list', value: allList }
+      ]
+    }, {
+      headers: { Authorization: `Bearer ${VERCEL_TOKEN}`, 'Content-Type': 'application/json' },
+      timeout: 3500
+    });
   } catch (err) {
-    console.warn('[Cloud Sync Update Notice]:', err.message);
+    console.warn('[Edge Config Push Notice]:', err.response?.data?.error?.message || err.message);
   }
 }
 
 /**
- * Fetches the latest state from cloud sync object by cloudId.
+ * Deletes an access request from Vercel Edge Config
  */
-async function fetchCloudSyncRecord(cloudId) {
-  if (!cloudId) return null;
-  try {
-    const res = await axios.get(`${CLOUD_SYNC_URL}/${cloudId}`, { timeout: 3000 });
-    if (res.data && res.data.data) {
-      return res.data.data;
-    }
-  } catch (err) {
-    // Network or not found
+export async function deleteRecordFromCloudStore(id) {
+  if (!id) return;
+  const map = new Map();
+  for (const r of accessRequests.values()) {
+    if (r && r.id && r.id !== id && r.cloudId !== id) map.set(r.id, r);
   }
-  return null;
+  const allList = Array.from(map.values());
+  const cleanKey = `req_${id.replace(/^req_/, '')}`;
+
+  if (VERCEL_TOKEN && EDGE_CONFIG_ID) {
+    try {
+      await axios.patch(`https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/items`, {
+        items: [
+          { operation: 'delete', key: cleanKey },
+          { operation: 'upsert', key: 'master_list', value: allList }
+        ]
+      }, {
+        headers: { Authorization: `Bearer ${VERCEL_TOKEN}`, 'Content-Type': 'application/json' },
+        timeout: 3500
+      });
+    } catch (err) {}
+  }
 }
 
 /**
@@ -247,7 +322,7 @@ export async function createAccessRequest({ name, reason, ip, clientTime, client
 
   const record = {
     id: requestId,
-    cloudId: null,
+    cloudId: requestId,
     name: cleanName,
     reason: cleanReason,
     ip: cleanIp,
@@ -258,17 +333,9 @@ export async function createAccessRequest({ name, reason, ip, clientTime, client
     createdAt: Date.now()
   };
 
-  // Sync to global cloud store for multi-container lambdas
-  const cloudId = await createCloudSyncRecord(record);
-  if (cloudId) {
-    record.cloudId = cloudId;
-  }
-
   accessRequests.set(requestId, record);
-  if (cloudId) {
-    accessRequests.set(cloudId, record);
-  }
   saveRequestsToDisk();
+  await syncRecordToCloudStore(record);
 
   // Auto-register webhook on Vercel if hostUrl provided
   if (hostUrl && (process.env.VERCEL === '1' || process.env.USE_WEBHOOK === 'true')) {
@@ -281,8 +348,7 @@ export async function createAccessRequest({ name, reason, ip, clientTime, client
   // Clean any legacy raw JSON state store pinned messages from previous versions
   cleanLegacyPinnedStateStore().catch(() => {});
 
-  // Target identifier for callback query: cloudId if available, else requestId
-  const targetId = cloudId || requestId;
+  const targetId = requestId;
 
   // Broadcast to Telegram admin(s) - ONLY TWO BUTTONS: Approve Access or Reject Access
   if (token && adminChatIds.length > 0) {
@@ -347,29 +413,25 @@ export function getAccessRequestStatus(requestId) {
 export async function getAccessRequestStatusAsync(requestId, cloudId = null) {
   loadRequestsFromDisk();
 
-  let record = accessRequests.get(requestId);
-  if (!record && cloudId) {
-    record = accessRequests.get(cloudId);
-  }
+  let record = accessRequests.get(requestId) || (cloudId ? accessRequests.get(cloudId) : null);
 
-  // If already reached final status (APPROVED or REJECTED), return immediately
-  if (record && (record.status === 'APPROVED' || record.status === 'REJECTED')) {
+  const targetId = requestId || cloudId;
+  const cloudRecord = await getEdgeConfigRecord(targetId);
+  if (cloudRecord && cloudRecord.status) {
+    record = cloudRecord;
+    accessRequests.set(record.id, record);
+    if (record.cloudId) accessRequests.set(record.cloudId, record);
+    if (record.status === 'REJECTED' && record.token) {
+      revokedSessionTokens.add(record.token);
+    }
+    saveRequestsToDisk();
     return record;
   }
 
-  // Query Cloud Sync Store if cloudId is available or if target might be a cloudId
-  const targetCloudId = cloudId || (record && record.cloudId) || (requestId && requestId.length > 20 && !requestId.startsWith('req_') ? requestId : null);
-  if (targetCloudId) {
-    const cloudRecord = await fetchCloudSyncRecord(targetCloudId);
-    if (cloudRecord && cloudRecord.status) {
-      record = cloudRecord;
-      accessRequests.set(requestId, record);
-      accessRequests.set(targetCloudId, record);
-      saveRequestsToDisk();
-      return record;
-    }
-  }
+  if (record) return record;
 
+  await syncFromCloudStore();
+  record = accessRequests.get(requestId) || (cloudId ? accessRequests.get(cloudId) : null);
   if (record) return record;
 
   return {
@@ -389,23 +451,15 @@ export async function approveAccessRequest(targetId, approvedBy = 'Admin') {
   loadRequestsFromDisk();
 
   let record = accessRequests.get(targetId);
-  let cloudId = null;
-
   if (!record) {
-    // Try fetching from cloud sync store
-    const cloudRecord = await fetchCloudSyncRecord(targetId);
-    if (cloudRecord) {
-      record = cloudRecord;
-      cloudId = targetId;
-    }
-  } else if (record.cloudId) {
-    cloudId = record.cloudId;
+    const cloudRecord = await getEdgeConfigRecord(targetId);
+    if (cloudRecord) record = cloudRecord;
   }
 
   if (!record) {
     record = {
       id: targetId.startsWith('req_') ? targetId : `req_${targetId}`,
-      cloudId: targetId.length > 20 && !targetId.startsWith('req_') ? targetId : null,
+      cloudId: targetId,
       name: 'Authorized Visitor',
       reason: 'Approved via Telegram',
       ip: 'Unknown',
@@ -414,13 +468,10 @@ export async function approveAccessRequest(targetId, approvedBy = 'Admin') {
     };
   }
 
-  if (!cloudId && record.cloudId) {
-    cloudId = record.cloudId;
-  }
-
   // Generate stateless HMAC-signed token
   const sessionToken = signSessionToken({
     requestId: record.id,
+    cloudId: record.cloudId || null,
     name: record.name,
     approvedBy,
     approvedAt: Date.now()
@@ -432,15 +483,12 @@ export async function approveAccessRequest(targetId, approvedBy = 'Admin') {
   record.approvedAt = Date.now();
 
   accessRequests.set(record.id, record);
-  if (cloudId) {
-    accessRequests.set(cloudId, record);
+  if (record.cloudId) {
+    accessRequests.set(record.cloudId, record);
   }
   saveRequestsToDisk();
 
-  // Sync to global cloud store
-  if (cloudId) {
-    await updateCloudSyncRecord(cloudId, record);
-  }
+  await syncRecordToCloudStore(record);
 
   return record;
 }
@@ -452,33 +500,21 @@ export async function rejectAccessRequest(targetId, rejectedBy = 'Admin') {
   loadRequestsFromDisk();
 
   let record = accessRequests.get(targetId);
-  let cloudId = null;
-
   if (!record) {
-    // Try fetching from cloud sync store
-    const cloudRecord = await fetchCloudSyncRecord(targetId);
-    if (cloudRecord) {
-      record = cloudRecord;
-      cloudId = targetId;
-    }
-  } else if (record.cloudId) {
-    cloudId = record.cloudId;
+    const cloudRecord = await getEdgeConfigRecord(targetId);
+    if (cloudRecord) record = cloudRecord;
   }
 
   if (!record) {
     record = {
       id: targetId.startsWith('req_') ? targetId : `req_${targetId}`,
-      cloudId: targetId.length > 20 && !targetId.startsWith('req_') ? targetId : null,
+      cloudId: targetId,
       name: 'Visitor',
       reason: 'Rejected via Telegram',
       ip: 'Unknown',
       status: 'PENDING',
       createdAt: Date.now()
     };
-  }
-
-  if (!cloudId && record.cloudId) {
-    cloudId = record.cloudId;
   }
 
   if (record.token) {
@@ -491,15 +527,12 @@ export async function rejectAccessRequest(targetId, rejectedBy = 'Admin') {
   record.rejectedAt = Date.now();
 
   accessRequests.set(record.id, record);
-  if (cloudId) {
-    accessRequests.set(cloudId, record);
+  if (record.cloudId) {
+    accessRequests.set(record.cloudId, record);
   }
   saveRequestsToDisk();
 
-  // Sync to global cloud store
-  if (cloudId) {
-    await updateCloudSyncRecord(cloudId, record);
-  }
+  await syncRecordToCloudStore(record);
 
   return record;
 }
@@ -540,6 +573,56 @@ export function verifyAccessToken(token) {
   }
 
   // Handle legacy/memory tokens
+  return false;
+}
+
+/**
+ * Asynchronously verifies if a session token is active and not revoked across global Edge Config
+ */
+export async function verifyAccessTokenAsync(token) {
+  if (!token || typeof token !== 'string') return false;
+
+  loadRequestsFromDisk();
+
+  if (revokedSessionTokens.has(token)) return false;
+
+  if (token.startsWith('tok.')) {
+    const parts = token.split('.');
+    if (parts.length === 3) {
+      const payloadStr = parts[1];
+      const signature = parts[2];
+      const expectedSig = crypto.createHmac('sha256', AUTH_SECRET).update(payloadStr).digest('base64url');
+
+      if (crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+        try {
+          const payload = JSON.parse(Buffer.from(payloadStr, 'base64url').toString('utf-8'));
+          if (!payload || !payload.requestId) return false;
+
+          // Check real-time cloud store for cross-container revocation
+          const cloudRecord = await getEdgeConfigRecord(payload.requestId);
+          if (cloudRecord) {
+            accessRequests.set(cloudRecord.id, cloudRecord);
+            if (cloudRecord.status === 'REJECTED') {
+              revokedSessionTokens.add(token);
+              return false;
+            }
+            if (cloudRecord.status === 'APPROVED') {
+              return true;
+            }
+          }
+
+          const record = accessRequests.get(payload.requestId);
+          if (record && record.status === 'REJECTED') {
+            return false;
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+  }
+
   return false;
 }
 
@@ -838,7 +921,7 @@ export async function deleteAccessRequest(targetId) {
   loadRequestsFromDisk();
   let record = accessRequests.get(targetId);
   if (!record) {
-    record = await fetchCloudSyncRecord(targetId);
+    record = await getEdgeConfigRecord(targetId);
   }
 
   if (record) {
@@ -850,6 +933,7 @@ export async function deleteAccessRequest(targetId) {
       accessRequests.delete(record.cloudId);
     }
     saveRequestsToDisk();
+    await deleteRecordFromCloudStore(targetId);
   }
   return record;
 }
@@ -1005,6 +1089,7 @@ async function sendActiveUsersList(chatId, messageId = null) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) return;
 
+  await syncFromCloudStore();
   const users = getActiveUsersList();
   let text = `👥 <b>ACTIVE & APPROVED USERS (${users.length})</b>\n\n`;
 
@@ -1057,6 +1142,7 @@ async function sendBlockedUsersList(chatId, messageId = null) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) return;
 
+  await syncFromCloudStore();
   const users = getBlockedUsersList();
   let text = `🚫 <b>BLOCKED USERS (${users.length})</b>\n\n`;
 
@@ -1112,7 +1198,7 @@ async function sendActiveUserDetail(chatId, messageId, targetId) {
   loadRequestsFromDisk();
   let record = accessRequests.get(targetId);
   if (!record) {
-    record = await fetchCloudSyncRecord(targetId);
+    record = await getEdgeConfigRecord(targetId);
   }
 
   if (!record) {
@@ -1173,7 +1259,7 @@ async function sendBlockedUserDetail(chatId, messageId, targetId) {
   loadRequestsFromDisk();
   let record = accessRequests.get(targetId);
   if (!record) {
-    record = await fetchCloudSyncRecord(targetId);
+    record = await getEdgeConfigRecord(targetId);
   }
 
   if (!record) {

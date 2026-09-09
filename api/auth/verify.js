@@ -1,4 +1,4 @@
-import { verifyAccessToken } from '../../src/services/telegramBot.js';
+import { verifyAccessTokenAsync } from '../../src/services/telegramBot.js';
 
 export default async function handler(req, res) {
   try {
@@ -11,7 +11,7 @@ export default async function handler(req, res) {
     body = body || {};
 
     const token = body.token || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
-    const isValid = verifyAccessToken(token);
+    const isValid = await verifyAccessTokenAsync(token);
 
     return res.status(200).json({
       success: true,
