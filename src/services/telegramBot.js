@@ -792,6 +792,426 @@ function escapeHtml(str) {
 }
 
 /**
+ * Retrieves all unique visitor access requests
+ */
+export function getAllAccessRequests() {
+  loadRequestsFromDisk();
+  const map = new Map();
+  for (const record of accessRequests.values()) {
+    if (record && record.id) {
+      map.set(record.id, record);
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+/**
+ * Retrieves all active / approved visitors
+ */
+export function getActiveUsersList() {
+  return getAllAccessRequests().filter(r => r.status === 'APPROVED');
+}
+
+/**
+ * Retrieves all blocked / rejected visitors
+ */
+export function getBlockedUsersList() {
+  return getAllAccessRequests().filter(r => r.status === 'REJECTED');
+}
+
+/**
+ * Deletes an access request record and revokes its session token
+ */
+export async function deleteAccessRequest(targetId) {
+  loadRequestsFromDisk();
+  let record = accessRequests.get(targetId);
+  if (!record) {
+    record = await fetchCloudSyncRecord(targetId);
+  }
+
+  if (record) {
+    if (record.token) {
+      revokeAccessToken(record.token);
+    }
+    accessRequests.delete(record.id);
+    if (record.cloudId) {
+      accessRequests.delete(record.cloudId);
+    }
+    saveRequestsToDisk();
+  }
+  return record;
+}
+
+/**
+ * Telegram persistent bottom shortcut keyboard (next to attachment clip)
+ */
+export const ADMIN_KEYBOARD_SHORTCUTS = {
+  keyboard: [
+    [{ text: '🚀 Deploy New Website' }],
+    [{ text: '👥 Active Users' }, { text: '🚫 Blocked Users' }],
+    [{ text: '🔄 /start' }]
+  ],
+  resize_keyboard: true,
+  is_persistent: true
+};
+
+/**
+ * Registers official bot commands with Telegram
+ */
+export async function registerBotCommands() {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token || token === 'your_telegram_bot_token_here') return;
+  try {
+    await axios.post(`https://api.telegram.org/bot${token}/setMyCommands`, {
+      commands: [
+        { command: 'start', description: '🏠 Open Main Dashboard & Actions' },
+        { command: 'deploy', description: '🚀 Deploy a new website to Vercel' },
+        { command: 'active_users', description: '👥 View & manage active approved users' },
+        { command: 'blocked_users', description: '🚫 View & manage blocked users' },
+        { command: 'status', description: '📊 View recent deployment history' },
+        { command: 'cancel', description: '❌ Cancel current workflow' }
+      ]
+    }, { timeout: 3500 });
+  } catch (err) {
+    console.warn('[Telegram Commands Registration Notice]:', err.message);
+  }
+}
+
+/**
+ * Inline Markup for Main Menu
+ */
+function getMainMenuMarkup() {
+  return {
+    inline_keyboard: [
+      [{ text: '🚀 Deploy New Website', callback_data: 'cmd_deploy' }],
+      [
+        { text: '👥 Approved Users', callback_data: 'cmd_active_users' },
+        { text: '🚫 Blocked Users', callback_data: 'cmd_blocked_users' }
+      ]
+    ]
+  };
+}
+
+/**
+ * Sends or updates the Main Menu Dashboard
+ */
+async function sendMainMenu(chatId, userName = 'Admin', messageId = null) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+
+  const text =
+    `👋 <b>Hello ${escapeHtml(userName)}!</b>\n\n` +
+    `⚡ <b>Vercel Auto Host Control Panel</b>\n` +
+    `Select an option below to manage website deployments and visitor access:\n\n` +
+    `• 🚀 <b>Deploy New Website:</b> Upload .zip or HTML files & publish to Vercel\n` +
+    `• 👥 <b>Approved Users:</b> View active users, details, and access control\n` +
+    `• 🚫 <b>Blocked Users:</b> View blocked users & reactivate access`;
+
+  if (messageId) {
+    try {
+      await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: 'HTML',
+        reply_markup: getMainMenuMarkup()
+      }, { timeout: 4000 });
+      return;
+    } catch {}
+  }
+
+  await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+    reply_markup: {
+      ...getMainMenuMarkup(),
+      ...ADMIN_KEYBOARD_SHORTCUTS
+    }
+  }, { timeout: 4000 });
+}
+
+/**
+ * Starts the deployment workflow
+ */
+async function startDeployWorkflow(chatId, messageId = null) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+
+  userSessions.set(chatId, {
+    step: 'AWAITING_SOURCE',
+    htmlContent: null,
+    cssContent: null,
+    jsContent: null,
+    zipBuffer: null,
+    files: null,
+    envContent: null,
+    envVariables: null,
+    projectName: null,
+    timestamp: Date.now()
+  });
+
+  const text =
+    `🚀 <b>DEPLOY NEW WEBSITE TO VERCEL</b>\n\n` +
+    `📦 <b>Option 1 (Recommended):</b> Send your full <b>.ZIP file</b> (with <code>index.html</code> entrypoint).\n` +
+    `📄 <b>Option 2:</b> Send individual source files (<code>index.html</code> ➔ <code>style.css</code> ➔ <code>logic.js</code>).\n\n` +
+    `📌 <b>Step 1:</b> Please upload your <b>.ZIP file</b> or <b>index.html</b> document now!`;
+
+  if (messageId) {
+    try {
+      await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔙 Back to Menu', callback_data: 'cmd_main_menu' }]
+          ]
+        }
+      }, { timeout: 4000 });
+      return;
+    } catch {}
+  }
+
+  await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔙 Back to Menu', callback_data: 'cmd_main_menu' }]
+      ]
+    }
+  }, { timeout: 4000 });
+}
+
+/**
+ * Sends the Active / Approved Users list
+ */
+async function sendActiveUsersList(chatId, messageId = null) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+
+  const users = getActiveUsersList();
+  let text = `👥 <b>ACTIVE & APPROVED USERS (${users.length})</b>\n\n`;
+
+  const inline_keyboard = [];
+
+  if (users.length === 0) {
+    text += `<i>No active approved users found. When visitors request access from the website and are approved, they will appear here.</i>`;
+  } else {
+    text += `Select any user below to view full visitor details, remove, or block access:\n`;
+    for (const user of users.slice(0, 12)) {
+      const targetId = user.cloudId || user.id;
+      const userLabel = `👤 ${user.name} • ${user.time ? user.time.split(',')[0] : 'Active'}`;
+      inline_keyboard.push([{ text: userLabel, callback_data: `user_detail:${targetId}` }]);
+    }
+  }
+
+  inline_keyboard.push([
+    { text: '➕ Deploy Website', callback_data: 'cmd_deploy' },
+    { text: '🚫 Blocked Users', callback_data: 'cmd_blocked_users' }
+  ]);
+  inline_keyboard.push([
+    { text: '🔙 Main Menu', callback_data: 'cmd_main_menu' }
+  ]);
+
+  if (messageId) {
+    try {
+      await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard }
+      }, { timeout: 4000 });
+      return;
+    } catch {}
+  }
+
+  await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard }
+  }, { timeout: 4000 });
+}
+
+/**
+ * Sends the Blocked Users list
+ */
+async function sendBlockedUsersList(chatId, messageId = null) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+
+  const users = getBlockedUsersList();
+  let text = `🚫 <b>BLOCKED USERS (${users.length})</b>\n\n`;
+
+  const inline_keyboard = [];
+
+  if (users.length === 0) {
+    text += `<i>No blocked users found. Users whose access is declined or blocked will appear here.</i>`;
+  } else {
+    text += `Select any blocked visitor below to view full details, remove, or reactivate access:\n`;
+    for (const user of users.slice(0, 12)) {
+      const targetId = user.cloudId || user.id;
+      const userLabel = `🚫 ${user.name} • ${user.time ? user.time.split(',')[0] : 'Blocked'}`;
+      inline_keyboard.push([{ text: userLabel, callback_data: `blocked_detail:${targetId}` }]);
+    }
+  }
+
+  inline_keyboard.push([
+    { text: '👥 Active Users', callback_data: 'cmd_active_users' },
+    { text: '➕ Deploy Website', callback_data: 'cmd_deploy' }
+  ]);
+  inline_keyboard.push([
+    { text: '🔙 Main Menu', callback_data: 'cmd_main_menu' }
+  ]);
+
+  if (messageId) {
+    try {
+      await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard }
+      }, { timeout: 4000 });
+      return;
+    } catch {}
+  }
+
+  await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard }
+  }, { timeout: 4000 });
+}
+
+/**
+ * Sends detailed information for an Active user
+ */
+async function sendActiveUserDetail(chatId, messageId, targetId) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+
+  loadRequestsFromDisk();
+  let record = accessRequests.get(targetId);
+  if (!record) {
+    record = await fetchCloudSyncRecord(targetId);
+  }
+
+  if (!record) {
+    await sendActiveUsersList(chatId, messageId);
+    return;
+  }
+
+  const text =
+    `👤 <b>VISITOR DETAILS: ACTIVE USER</b>\n\n` +
+    `🏷️ <b>Name:</b> ${escapeHtml(record.name)}\n` +
+    `🎯 <b>Access Reason:</b> ${escapeHtml(record.reason)}\n` +
+    `🌐 <b>IP Address:</b> <code>${escapeHtml(record.ip || 'Unknown')}</code>\n` +
+    `⏰ <b>Request Time:</b> ${escapeHtml(record.time || 'Unknown')}\n` +
+    `💻 <b>Device / Browser:</b> ${escapeHtml(record.device || 'Web Browser')}\n` +
+    `🛡️ <b>Status:</b> ✅ Active & Approved\n` +
+    `👑 <b>Approved By:</b> ${escapeHtml(record.approvedBy || 'Admin')}\n` +
+    `🔑 <b>Session Token:</b> <code>${record.token ? 'Active (HMAC Signed)' : 'None'}</code>\n\n` +
+    `👇 <b>Manage this user's access:</b>`;
+
+  const inline_keyboard = [
+    [
+      { text: '🗑️ Remove User', callback_data: `user_remove:${targetId}` },
+      { text: '🚫 Block Access', callback_data: `user_block:${targetId}` }
+    ],
+    [
+      { text: '🔙 Back to Active Users', callback_data: 'cmd_active_users' }
+    ]
+  ];
+
+  if (messageId) {
+    try {
+      await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard }
+      }, { timeout: 4000 });
+      return;
+    } catch {}
+  }
+
+  await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard }
+  }, { timeout: 4000 });
+}
+
+/**
+ * Sends detailed information for a Blocked user
+ */
+async function sendBlockedUserDetail(chatId, messageId, targetId) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+
+  loadRequestsFromDisk();
+  let record = accessRequests.get(targetId);
+  if (!record) {
+    record = await fetchCloudSyncRecord(targetId);
+  }
+
+  if (!record) {
+    await sendBlockedUsersList(chatId, messageId);
+    return;
+  }
+
+  const text =
+    `🚫 <b>VISITOR DETAILS: BLOCKED USER</b>\n\n` +
+    `🏷️ <b>Name:</b> ${escapeHtml(record.name)}\n` +
+    `🎯 <b>Access Reason:</b> ${escapeHtml(record.reason)}\n` +
+    `🌐 <b>IP Address:</b> <code>${escapeHtml(record.ip || 'Unknown')}</code>\n` +
+    `⏰ <b>Request Time:</b> ${escapeHtml(record.time || 'Unknown')}\n` +
+    `💻 <b>Device / Browser:</b> ${escapeHtml(record.device || 'Web Browser')}\n` +
+    `🚫 <b>Status:</b> ❌ Blocked by Admin\n` +
+    `👑 <b>Blocked By:</b> ${escapeHtml(record.rejectedBy || 'Admin')}\n\n` +
+    `👇 <b>Manage this user's access:</b>`;
+
+  const inline_keyboard = [
+    [
+      { text: '🗑️ Remove User', callback_data: `user_remove:${targetId}` },
+      { text: '✅ Activate Access', callback_data: `user_activate:${targetId}` }
+    ],
+    [
+      { text: '🔙 Back to Blocked Users', callback_data: 'cmd_blocked_users' }
+    ]
+  ];
+
+  if (messageId) {
+    try {
+      await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard }
+      }, { timeout: 4000 });
+      return;
+    } catch {}
+  }
+
+  await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard }
+  }, { timeout: 4000 });
+}
+
+/**
  * Direct Async Update Handler for Webhook & Serverless Execution
  */
 export async function processIncomingUpdate(update) {
@@ -800,14 +1220,103 @@ export async function processIncomingUpdate(update) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const bot = botInstance || initTelegramBot();
 
-  // Handle Callback Queries (e.g. [Approve Access], [Reject Request], [Skip .env])
+  // Handle Callback Queries (e.g. [Approve Access], [Reject Request], [Skip .env], [User Actions])
   if (update.callback_query) {
     const cb = update.callback_query;
     const chatId = cb.message?.chat?.id;
     const messageId = cb.message?.message_id;
     const data = cb.data;
 
-    // Handle 1-Click Visitor Authentication Approvals
+    // 1. Navigation Actions
+    if (data === 'cmd_main_menu') {
+      await sendMainMenu(chatId, cb.from?.first_name || 'Admin', messageId);
+      try { await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, { callback_query_id: cb.id }); } catch {}
+      return;
+    }
+
+    if (data === 'cmd_deploy') {
+      await startDeployWorkflow(chatId, messageId);
+      try { await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, { callback_query_id: cb.id }); } catch {}
+      return;
+    }
+
+    if (data === 'cmd_active_users') {
+      await sendActiveUsersList(chatId, messageId);
+      try { await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, { callback_query_id: cb.id }); } catch {}
+      return;
+    }
+
+    if (data === 'cmd_blocked_users') {
+      await sendBlockedUsersList(chatId, messageId);
+      try { await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, { callback_query_id: cb.id }); } catch {}
+      return;
+    }
+
+    // 2. User Detail Views
+    if (data && data.startsWith('user_detail:')) {
+      const targetId = data.substring('user_detail:'.length);
+      await sendActiveUserDetail(chatId, messageId, targetId);
+      try { await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, { callback_query_id: cb.id }); } catch {}
+      return;
+    }
+
+    if (data && data.startsWith('blocked_detail:')) {
+      const targetId = data.substring('blocked_detail:'.length);
+      await sendBlockedUserDetail(chatId, messageId, targetId);
+      try { await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, { callback_query_id: cb.id }); } catch {}
+      return;
+    }
+
+    // 3. User Management Actions (Remove, Block, Activate)
+    if (data && data.startsWith('user_remove:')) {
+      const targetId = data.substring('user_remove:'.length);
+      const record = await deleteAccessRequest(targetId);
+      if (token) {
+        try {
+          await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+            callback_query_id: cb.id,
+            text: `🗑️ User ${record ? record.name : ''} removed successfully!`,
+            show_alert: false
+          }, { timeout: 3500 });
+        } catch {}
+      }
+      await sendActiveUsersList(chatId, messageId);
+      return;
+    }
+
+    if (data && data.startsWith('user_block:')) {
+      const targetId = data.substring('user_block:'.length);
+      const record = await rejectAccessRequest(targetId, cb.from?.first_name || 'Admin');
+      if (token) {
+        try {
+          await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+            callback_query_id: cb.id,
+            text: `🚫 Access BLOCKED for ${record ? record.name : 'visitor'}!`,
+            show_alert: false
+          }, { timeout: 3500 });
+        } catch {}
+      }
+      await sendBlockedUserDetail(chatId, messageId, targetId);
+      return;
+    }
+
+    if (data && data.startsWith('user_activate:')) {
+      const targetId = data.substring('user_activate:'.length);
+      const record = await approveAccessRequest(targetId, cb.from?.first_name || 'Admin');
+      if (token) {
+        try {
+          await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+            callback_query_id: cb.id,
+            text: `✅ Access ACTIVATED for ${record ? record.name : 'visitor'}!`,
+            show_alert: false
+          }, { timeout: 3500 });
+        } catch {}
+      }
+      await sendActiveUserDetail(chatId, messageId, targetId);
+      return;
+    }
+
+    // 4. Handle 1-Click Visitor Authentication Approvals
     if (data && data.startsWith('auth_approve:')) {
       const targetId = data.substring('auth_approve:'.length);
       const record = await approveAccessRequest(targetId, cb.from?.first_name || 'Admin');
@@ -828,11 +1337,17 @@ export async function processIncomingUpdate(update) {
               message_id: messageId,
               text: `✅ <b>ACCESS REQUEST APPROVED</b>\n\n` +
                     `👤 <b>Visitor Name:</b> ${escapeHtml(record.name)}\n` +
-                    `🎯 <b>Reason for Contact:</b> ${escapeHtml(record.reason)}\n` +
+                    `🎯 <b>Reason:</b> ${escapeHtml(record.reason)}\n` +
                     `🛡️ <b>Status:</b> Approved by ${escapeHtml(cb.from?.first_name || 'Admin')} ✅\n` +
                     `🕒 <b>Approved At:</b> ${new Date().toLocaleTimeString()}\n\n` +
                     `<i>Website deployment launchpad is now unlocked for this visitor.</i>`,
-              parse_mode: 'HTML'
+              parse_mode: 'HTML',
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '👥 View Active Users', callback_data: 'cmd_active_users' }],
+                  [{ text: '🚫 Block Access', callback_data: `user_block:${targetId}` }]
+                ]
+              }
             }, { timeout: 3500 });
           } catch (e) {
             console.warn('[Edit message error]:', e.message);
@@ -842,7 +1357,7 @@ export async function processIncomingUpdate(update) {
       return;
     }
 
-    // Handle 1-Click Visitor Authentication Rejections
+    // 5. Handle 1-Click Visitor Authentication Rejections
     if (data && data.startsWith('auth_reject:')) {
       const targetId = data.substring('auth_reject:'.length);
       const record = await rejectAccessRequest(targetId, cb.from?.first_name || 'Admin');
@@ -863,11 +1378,17 @@ export async function processIncomingUpdate(update) {
               message_id: messageId,
               text: `❌ <b>ACCESS REQUEST REJECTED</b>\n\n` +
                     `👤 <b>Visitor Name:</b> ${escapeHtml(record.name)}\n` +
-                    `🎯 <b>Reason for Contact:</b> ${escapeHtml(record.reason)}\n` +
+                    `🎯 <b>Reason:</b> ${escapeHtml(record.reason)}\n` +
                     `🚫 <b>Status:</b> Blocked by Admin (${escapeHtml(cb.from?.first_name || 'Admin')}) ❌\n` +
                     `🕒 <b>Rejected At:</b> ${new Date().toLocaleTimeString()}\n\n` +
                     `<i>Access to the deployment launchpad has been blocked.</i>`,
-              parse_mode: 'HTML'
+              parse_mode: 'HTML',
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '🚫 View Blocked Users', callback_data: 'cmd_blocked_users' }],
+                  [{ text: '✅ Unblock / Activate', callback_data: `user_activate:${targetId}` }]
+                ]
+              }
             }, { timeout: 3500 });
           } catch (e) {
             console.warn('[Edit message error]:', e.message);
@@ -901,63 +1422,81 @@ export async function processIncomingUpdate(update) {
     return;
   }
 
+  const rawText = (msg.text || '').trim();
 
-  // 1. /start command handler
-  if (msg.text && msg.text.startsWith('/start')) {
+  // Register admin chatId
+  registeredAdminChatIds.add(String(chatId));
+  saveAdminChatToDisk(chatId);
+
+  // 1. /start command or "🔄 /start"
+  if (rawText.startsWith('/start') || rawText === '🔄 /start') {
     const userName = msg.from?.first_name || 'there';
-
-    // Register this chat for instant access approval notifications
-    registeredAdminChatIds.add(chatId);
-
-    userSessions.set(chatId, {
-      step: 'AWAITING_SOURCE',
-      htmlContent: null,
-      cssContent: null,
-      jsContent: null,
-      zipBuffer: null,
-      files: null,
-      envContent: null,
-      envVariables: null,
-      projectName: null,
-      timestamp: Date.now()
-    });
-
-    await bot.sendMessage(
-      chatId,
-      `👋 *Hello ${userName}! Welcome to Vercel Auto Host Bot.*\n\n` +
-      `Deploy your website to *Vercel* in 3 easy steps:\n\n` +
-      `📦 *Option 1 (Recommended):* Send a \`.zip\` archive containing your full project (with \`index.html\` entrypoint).\n` +
-      `📄 *Option 2:* Send individual files (\`index.html\` ➔ \`style.css\` ➔ \`logic.js\`).\n\n` +
-      `📌 *Step 1:* Please upload your *.ZIP file* or *index.html* document to begin!`,
-      { parse_mode: 'Markdown' }
-    );
+    await sendMainMenu(chatId, userName);
     return;
   }
 
-  // 2. /cancel command handler
-  if (msg.text && msg.text.startsWith('/cancel')) {
+  // 2. Deploy Website ("🚀 Deploy New Website" or "/deploy")
+  if (rawText === '🚀 Deploy New Website' || rawText.startsWith('/deploy')) {
+    await startDeployWorkflow(chatId);
+    return;
+  }
+
+  // 3. Active Users ("👥 Active Users", "Approved User", "Active User", "/active_users", "/approved_users")
+  if (
+    rawText === '👥 Active Users' ||
+    rawText.toLowerCase() === 'active user' ||
+    rawText.toLowerCase() === 'active users' ||
+    rawText.toLowerCase() === 'approved user' ||
+    rawText.toLowerCase() === 'approved users' ||
+    rawText.startsWith('/active_users') ||
+    rawText.startsWith('/approved_users')
+  ) {
+    await sendActiveUsersList(chatId);
+    return;
+  }
+
+  // 4. Blocked Users ("🚫 Blocked Users", "Blocked User", "/blocked_users")
+  if (
+    rawText === '🚫 Blocked Users' ||
+    rawText.toLowerCase() === 'blocked user' ||
+    rawText.toLowerCase() === 'blocked users' ||
+    rawText.startsWith('/blocked_users')
+  ) {
+    await sendBlockedUsersList(chatId);
+    return;
+  }
+
+  // 5. /cancel command handler
+  if (rawText.startsWith('/cancel')) {
     userSessions.delete(chatId);
     await bot.sendMessage(
       chatId,
-      '❌ *Session cancelled.*\nType /start whenever you want to host a new website!',
-      { parse_mode: 'Markdown' }
+      '❌ *Current action cancelled.*\nUse the menu buttons below anytime!',
+      {
+        parse_mode: 'Markdown',
+        reply_markup: ADMIN_KEYBOARD_SHORTCUTS
+      }
     );
     return;
   }
 
-  // 3. /help command handler
-  if (msg.text && msg.text.startsWith('/help')) {
+  // 6. /help command handler
+  if (rawText.startsWith('/help')) {
     await bot.sendMessage(
       chatId,
       `📖 *Vercel Auto Host Bot Help*\n\n` +
-      `• *Upload .ZIP:* Send any \`.zip\` project file. We auto-extract all folders, images, and HTML/CSS/JS.\n` +
-      `• *Environment Variables:* Send \`.env\` or paste \`KEY=VALUE\` to configure Vercel variables automatically.\n` +
-      `• /start - Start a new deployment & register admin\n` +
-      `• /approve <id> - Manually approve an access request\n` +
-      `• /reject <id> - Manually decline an access request\n` +
-      `• /cancel - Reset current session\n` +
+      `• *Deploy Website:* Upload a \`.zip\` file with your website.\n` +
+      `• *Active Users:* View, inspect, remove, or block approved website visitors.\n` +
+      `• *Blocked Users:* View, inspect, remove, or unblock/activate declined visitors.\n` +
+      `• /start - Open main menu & shortcuts\n` +
+      `• /deploy - Launch new website deployment\n` +
+      `• /active_users - List approved visitors\n` +
+      `• /blocked_users - List blocked visitors\n` +
       `• /status - View recent deployments`,
-      { parse_mode: 'Markdown' }
+      {
+        parse_mode: 'Markdown',
+        reply_markup: ADMIN_KEYBOARD_SHORTCUTS
+      }
     );
     return;
   }
@@ -1246,6 +1785,9 @@ export function initTelegramBot() {
 
   // Clean up any legacy raw JSON state store pinned messages from previous versions
   cleanLegacyPinnedStateStore().catch(() => {});
+
+  // Register command shortcuts with Telegram
+  registerBotCommands().catch(() => {});
 
   if (usePolling) {
     bot.on('polling_error', (error) => {
