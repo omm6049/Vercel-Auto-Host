@@ -12,7 +12,9 @@ import {
   getAccessStatusByIpAsync,
   normalizeIp,
   ADMIN_KEYBOARD_SHORTCUTS,
-  processIncomingUpdate
+  processIncomingUpdate,
+  clearAllActiveUsers,
+  clearAllBlockedUsers
 } from '../src/services/telegramBot.js';
 
 async function runUserManagementTests() {
@@ -146,6 +148,31 @@ async function runUserManagementTests() {
   // Cleanup
   await deleteAccessRequest(user3.id);
   await deleteAccessRequest(user2.cloudId || user2.id);
+
+  // 8. Test Clear All Active Users & Clear All Blocked Users actions
+  console.log('\n--- Test 8: Bulk Clearance of Active & Blocked Users ---');
+  const bulkActive1 = await createAccessRequest({ name: 'Bulk User 1', reason: 'Test 1', ip: '192.168.1.1' });
+  const bulkActive2 = await createAccessRequest({ name: 'Bulk User 2', reason: 'Test 2', ip: '192.168.1.2' });
+  await approveAccessRequest(bulkActive1.id, 'Admin');
+  await approveAccessRequest(bulkActive2.id, 'Admin');
+
+  const bulkBlocked1 = await createAccessRequest({ name: 'Spam 1', reason: 'Abuse 1', ip: '192.168.1.3' });
+  const bulkBlocked2 = await createAccessRequest({ name: 'Spam 2', reason: 'Abuse 2', ip: '192.168.1.4' });
+  await rejectAccessRequest(bulkBlocked1.id, 'Admin');
+  await rejectAccessRequest(bulkBlocked2.id, 'Admin');
+
+  assert(getActiveUsersList().length >= 2, 'Should have active users before clear');
+  assert(getBlockedUsersList().length >= 2, 'Should have blocked users before clear');
+
+  const activeRemoved = await clearAllActiveUsers();
+  assert(activeRemoved >= 2, 'Should have cleared active users');
+  assert.strictEqual(getActiveUsersList().length, 0, 'Active users list should now be completely empty');
+  console.log(`✅ Cleared all ${activeRemoved} active user(s) successfully!`);
+
+  const blockedRemoved = await clearAllBlockedUsers();
+  assert(blockedRemoved >= 2, 'Should have cleared blocked users');
+  assert.strictEqual(getBlockedUsersList().length, 0, 'Blocked users list should now be completely empty');
+  console.log(`✅ Cleared all ${blockedRemoved} blocked user(s) successfully!`);
 
   console.log('\n🎉 ALL USER MANAGEMENT, SHORTCUT DASHBOARD & IP AUTO-LOGIN/BLOCK TESTS PASSED (100%)!\n');
 }

@@ -1014,6 +1014,86 @@ export async function deleteAccessRequest(targetId) {
 }
 
 /**
+ * Batch deletes records from Vercel Edge Config and updates master_list
+ */
+export async function batchDeleteFromCloudStore(recordsToDelete) {
+  if (!Array.isArray(recordsToDelete) || recordsToDelete.length === 0) return;
+  if (!VERCEL_TOKEN || !EDGE_CONFIG_ID) return;
+
+  try {
+    const map = new Map();
+    for (const r of accessRequests.values()) {
+      if (r && r.id) map.set(r.id, r);
+    }
+    const remainingList = Array.from(map.values());
+
+    const items = [
+      { operation: 'upsert', key: 'master_list', value: remainingList }
+    ];
+
+    for (const rec of recordsToDelete) {
+      if (!rec) continue;
+      const cleanKey = `req_${(rec.id || '').replace(/^req_/, '')}`;
+      items.push({ operation: 'delete', key: cleanKey });
+      if (rec.ip && rec.ip !== 'Unknown') {
+        const cleanIp = normalizeIp(rec.ip);
+        if (cleanIp) {
+          const cleanIpKey = `ip_${cleanIp.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+          items.push({ operation: 'delete', key: cleanIpKey });
+        }
+      }
+    }
+
+    await axios.patch(`https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/items`, {
+      items
+    }, {
+      headers: { Authorization: `Bearer ${VERCEL_TOKEN}`, 'Content-Type': 'application/json' },
+      timeout: 4000
+    });
+  } catch (err) {
+    console.warn('[Edge Config Batch Delete Notice]:', err.response?.data?.error?.message || err.message);
+  }
+}
+
+/**
+ * Clears all Active / Approved users, revokes their tokens, and syncs across stores
+ */
+export async function clearAllActiveUsers() {
+  loadRequestsFromDisk();
+  await syncFromCloudStore();
+  const activeUsers = getActiveUsersList();
+  for (const user of activeUsers) {
+    if (user.token) {
+      revokeAccessToken(user.token);
+    }
+    accessRequests.delete(user.id);
+    if (user.cloudId) accessRequests.delete(user.cloudId);
+  }
+  saveRequestsToDisk();
+  await batchDeleteFromCloudStore(activeUsers);
+  return activeUsers.length;
+}
+
+/**
+ * Clears all Blocked / Rejected users and syncs across stores
+ */
+export async function clearAllBlockedUsers() {
+  loadRequestsFromDisk();
+  await syncFromCloudStore();
+  const blockedUsers = getBlockedUsersList();
+  for (const user of blockedUsers) {
+    if (user.token) {
+      revokeAccessToken(user.token);
+    }
+    accessRequests.delete(user.id);
+    if (user.cloudId) accessRequests.delete(user.cloudId);
+  }
+  saveRequestsToDisk();
+  await batchDeleteFromCloudStore(blockedUsers);
+  return blockedUsers.length;
+}
+
+/**
  * Telegram persistent bottom shortcut keyboard (next to attachment clip)
  */
 export const ADMIN_KEYBOARD_SHORTCUTS = {
@@ -1095,10 +1175,7 @@ async function sendMainMenu(chatId, userName = 'Admin', messageId = null) {
     chat_id: chatId,
     text,
     parse_mode: 'HTML',
-    reply_markup: {
-      ...getMainMenuMarkup(),
-      ...ADMIN_KEYBOARD_SHORTCUTS
-    }
+    reply_markup: getMainMenuMarkup()
   }, { timeout: 4000 });
 }
 
@@ -1186,6 +1263,7 @@ async function sendActiveUsersList(chatId, messageId = null) {
     { text: '🚫 Blocked Users', callback_data: 'cmd_blocked_users' }
   ]);
   inline_keyboard.push([
+    { text: '🗑️ Remove All Users', callback_data: 'clear_active_users' },
     { text: '🔙 Main Menu', callback_data: 'cmd_main_menu' }
   ]);
 
@@ -1239,6 +1317,7 @@ async function sendBlockedUsersList(chatId, messageId = null) {
     { text: '➕ Deploy Website', callback_data: 'cmd_deploy' }
   ]);
   inline_keyboard.push([
+    { text: '🗑️ Remove All Users', callback_data: 'clear_blocked_users' },
     { text: '🔙 Main Menu', callback_data: 'cmd_main_menu' }
   ]);
 
@@ -1440,7 +1519,37 @@ export async function processIncomingUpdate(update) {
       return;
     }
 
-    // 3. User Management Actions (Remove, Block, Activate)
+    // 3. User Management Actions (Remove, Block, Activate, Remove All)
+    if (data === 'clear_active_users') {
+      const count = await clearAllActiveUsers();
+      if (token) {
+        try {
+          await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+            callback_query_id: cb.id,
+            text: count > 0 ? `🗑️ Removed all ${count} active user(s)!` : 'No active users to remove.',
+            show_alert: false
+          }, { timeout: 3500 });
+        } catch {}
+      }
+      await sendActiveUsersList(chatId, messageId);
+      return;
+    }
+
+    if (data === 'clear_blocked_users') {
+      const count = await clearAllBlockedUsers();
+      if (token) {
+        try {
+          await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+            callback_query_id: cb.id,
+            text: count > 0 ? `🗑️ Removed all ${count} blocked user(s)!` : 'No blocked users to remove.',
+            show_alert: false
+          }, { timeout: 3500 });
+        } catch {}
+      }
+      await sendBlockedUsersList(chatId, messageId);
+      return;
+    }
+
     if (data && data.startsWith('user_remove:')) {
       const targetId = data.substring('user_remove:'.length);
       const record = await deleteAccessRequest(targetId);
@@ -1639,7 +1748,22 @@ export async function processIncomingUpdate(update) {
     return;
   }
 
-  // 5. /cancel command handler
+  // 5. Clear All Users commands (/clear_active, /clear_blocked)
+  if (rawText.startsWith('/clear_active')) {
+    const count = await clearAllActiveUsers();
+    await bot.sendMessage(chatId, `🗑️ *Removed all ${count} active approved user(s).*`, { parse_mode: 'Markdown' });
+    await sendActiveUsersList(chatId);
+    return;
+  }
+
+  if (rawText.startsWith('/clear_blocked')) {
+    const count = await clearAllBlockedUsers();
+    await bot.sendMessage(chatId, `🗑️ *Removed all ${count} blocked user(s).*`, { parse_mode: 'Markdown' });
+    await sendBlockedUsersList(chatId);
+    return;
+  }
+
+  // 6. /cancel command handler
   if (rawText.startsWith('/cancel')) {
     userSessions.delete(chatId);
     await bot.sendMessage(
@@ -1647,13 +1771,13 @@ export async function processIncomingUpdate(update) {
       '❌ *Current action cancelled.*\nUse the menu buttons below anytime!',
       {
         parse_mode: 'Markdown',
-        reply_markup: ADMIN_KEYBOARD_SHORTCUTS
+        reply_markup: getMainMenuMarkup()
       }
     );
     return;
   }
 
-  // 6. /help command handler
+  // 7. /help command handler
   if (rawText.startsWith('/help')) {
     await bot.sendMessage(
       chatId,
@@ -1668,7 +1792,7 @@ export async function processIncomingUpdate(update) {
       `• /status - View recent deployments`,
       {
         parse_mode: 'Markdown',
-        reply_markup: ADMIN_KEYBOARD_SHORTCUTS
+        reply_markup: getMainMenuMarkup()
       }
     );
     return;
