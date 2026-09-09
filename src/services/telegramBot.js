@@ -105,9 +105,12 @@ export async function syncFromCloudStore() {
     if (Array.isArray(list) && list.length > 0) {
       for (const item of list) {
         if (item && item.id) {
-          accessRequests.set(item.id, item);
-          if (item.cloudId) {
-            accessRequests.set(item.cloudId, item);
+          const local = accessRequests.get(item.id);
+          if (!local || (item.createdAt && (!local.createdAt || item.createdAt >= local.createdAt))) {
+            accessRequests.set(item.id, item);
+            if (item.cloudId) {
+              accessRequests.set(item.cloudId, item);
+            }
           }
           if (item.status === 'REJECTED' && item.token) {
             revokedSessionTokens.add(item.token);
@@ -128,7 +131,11 @@ export async function getAccessStatusByIpAsync(rawIp) {
 
   loadRequestsFromDisk();
 
-  // 1. Direct Edge Config key lookup by IP
+  // 1. In-memory / disk lookup (fastest & up-to-date)
+  const allLocal = getAllAccessRequests();
+  const localFound = allLocal.find(r => r && normalizeIp(r.ip) === ip);
+
+  // 2. Direct Edge Config key lookup by IP
   if (VERCEL_TOKEN && EDGE_CONFIG_ID) {
     try {
       const cleanIpKey = `ip_${ip.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
@@ -138,6 +145,14 @@ export async function getAccessStatusByIpAsync(rawIp) {
       });
       if (res.data && res.data.value) {
         const cloudRecord = res.data.value;
+        const localRecord = accessRequests.get(cloudRecord.id);
+        const localUpdated = localRecord ? (localRecord.approvedAt || localRecord.rejectedAt || localRecord.createdAt || 0) : 0;
+        const cloudUpdated = cloudRecord ? (cloudRecord.approvedAt || cloudRecord.rejectedAt || cloudRecord.createdAt || 0) : 0;
+
+        if (localRecord && localUpdated >= cloudUpdated) {
+          return localRecord;
+        }
+
         accessRequests.set(cloudRecord.id, cloudRecord);
         if (cloudRecord.status === 'REJECTED' && cloudRecord.token) {
           revokedSessionTokens.add(cloudRecord.token);
@@ -148,10 +163,7 @@ export async function getAccessStatusByIpAsync(rawIp) {
     } catch {}
   }
 
-  // 2. In-memory / disk lookup
-  const all = getAllAccessRequests();
-  const found = all.find(r => r && normalizeIp(r.ip) === ip);
-  if (found) return found;
+  if (localFound) return localFound;
 
   // 3. Fallback: sync from Edge Config master list
   await syncFromCloudStore();
@@ -208,9 +220,9 @@ export async function syncRecordToCloudStore(record) {
 /**
  * Deletes an access request from Vercel Edge Config
  */
-export async function deleteRecordFromCloudStore(id) {
+export async function deleteRecordFromCloudStore(id, recordObj = null) {
   if (!id) return;
-  let targetRecord = accessRequests.get(id);
+  let targetRecord = recordObj || accessRequests.get(id);
   const map = new Map();
   for (const r of accessRequests.values()) {
     if (r && r.id && r.id !== id && r.cloudId !== id) map.set(r.id, r);
@@ -376,8 +388,21 @@ export let botInstance = null;
  * Creates a new visitor authentication & access request and broadcasts approval buttons to Telegram Admin.
  * Displays only TWO options in Telegram: Approve Access or Reject Access.
  */
-export async function createAccessRequest({ name, reason, ip, clientTime, clientTimezone, deviceInfo, hostUrl }) {
+export async function createAccessRequest(arg1 = {}, reasonArg, ipArg, deviceInfoArg, clientTimeArg, clientTimezoneArg, hostUrlArg) {
   loadRequestsFromDisk();
+
+  let name, reason, ip, clientTime, clientTimezone, deviceInfo, hostUrl;
+  if (arg1 && typeof arg1 === 'object' && !Array.isArray(arg1)) {
+    ({ name, reason, ip, clientTime, clientTimezone, deviceInfo, hostUrl } = arg1);
+  } else {
+    name = arg1;
+    reason = reasonArg;
+    ip = ipArg;
+    deviceInfo = deviceInfoArg;
+    clientTime = clientTimeArg;
+    clientTimezone = clientTimezoneArg;
+    hostUrl = hostUrlArg;
+  }
 
   const cleanName = (name || 'Anonymous Visitor').trim();
   const cleanReason = (reason || 'General inquiry & deployment access').trim();
@@ -445,20 +470,91 @@ export async function createAccessRequest({ name, reason, ip, clientTime, client
       ]
     };
 
+    const telegramMessages = [];
     for (const adminChatId of adminChatIds) {
       try {
-        await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+        const sendRes = await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
           chat_id: adminChatId,
           text: alertHtml,
           parse_mode: 'HTML',
           reply_markup: replyMarkup
         }, { timeout: 4000 });
+        if (sendRes.data?.result?.message_id) {
+          telegramMessages.push({
+            chatId: String(adminChatId),
+            messageId: sendRes.data.result.message_id
+          });
+        }
         console.log(`[Telegram Auth Alert]: Sent approval request to admin ${adminChatId}`);
       } catch (sendErr) {
         console.warn(`[Telegram Auth Alert Error to ${adminChatId}]:`, sendErr.message);
       }
     }
+    if (telegramMessages.length > 0) {
+      record.telegramMessages = telegramMessages;
+      accessRequests.set(requestId, record);
+      saveRequestsToDisk();
+      await syncRecordToCloudStore(record);
+    }
   }
+
+  return record;
+}
+
+/**
+ * Cancels a pending access request, auto-deletes the alert message from Telegram, and cleans up storage.
+ */
+export async function cancelAccessRequest(requestId) {
+  if (!requestId) return null;
+  loadRequestsFromDisk();
+  let record = accessRequests.get(requestId);
+  if (!record) {
+    record = await getEdgeConfigRecord(requestId);
+  }
+  if (!record) return null;
+
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  // Auto-delete Telegram notification message(s)
+  if (token && Array.isArray(record.telegramMessages)) {
+    for (const msg of record.telegramMessages) {
+      if (msg && msg.chatId && msg.messageId) {
+        try {
+          await axios.post(`https://api.telegram.org/bot${token}/deleteMessage`, {
+            chat_id: msg.chatId,
+            message_id: msg.messageId
+          }, { timeout: 3500 });
+          console.log(`[Telegram Auto-Delete]: Successfully deleted request message ${msg.messageId} from admin chat ${msg.chatId}`);
+        } catch (delErr) {
+          // Fallback if deleteMessage is restricted: edit message to state it was cancelled
+          try {
+            await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
+              chat_id: msg.chatId,
+              message_id: msg.messageId,
+              text: `🗑️ <i>Access request from <b>${escapeHtml(record.name)}</b> was cancelled by visitor.</i>`,
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard: [] }
+            }, { timeout: 3000 });
+          } catch {}
+        }
+      }
+    }
+  }
+
+  // Revoke token if active
+  if (record.token) {
+    revokeAccessToken(record.token);
+  }
+
+  // Remove from memory and disk
+  accessRequests.delete(record.id);
+  if (record.cloudId) {
+    accessRequests.delete(record.cloudId);
+  }
+  saveRequestsToDisk();
+
+  // Delete from Edge Config
+  await deleteRecordFromCloudStore(record.id || requestId, record);
 
   return record;
 }
@@ -561,6 +657,15 @@ export async function approveAccessRequest(targetId, approvedBy = 'Admin') {
   if (record.cloudId) {
     accessRequests.set(record.cloudId, record);
   }
+  if (record.ip && record.ip !== 'Unknown') {
+    const cleanIp = normalizeIp(record.ip);
+    for (const r of accessRequests.values()) {
+      if (r && normalizeIp(r.ip) === cleanIp) {
+        r.status = 'APPROVED';
+        r.approvedAt = record.approvedAt;
+      }
+    }
+  }
   saveRequestsToDisk();
 
   await syncRecordToCloudStore(record);
@@ -604,6 +709,15 @@ export async function rejectAccessRequest(targetId, rejectedBy = 'Admin') {
   accessRequests.set(record.id, record);
   if (record.cloudId) {
     accessRequests.set(record.cloudId, record);
+  }
+  if (record.ip && record.ip !== 'Unknown') {
+    const cleanIp = normalizeIp(record.ip);
+    for (const r of accessRequests.values()) {
+      if (r && normalizeIp(r.ip) === cleanIp) {
+        r.status = 'REJECTED';
+        r.rejectedAt = record.rejectedAt;
+      }
+    }
   }
   saveRequestsToDisk();
 
@@ -972,7 +1086,11 @@ export function getAllAccessRequests() {
       map.set(record.id, record);
     }
   }
-  return Array.from(map.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return Array.from(map.values()).sort((a, b) => {
+    const aTime = Math.max(a.approvedAt || 0, a.rejectedAt || 0, a.createdAt || 0);
+    const bTime = Math.max(b.approvedAt || 0, b.rejectedAt || 0, b.createdAt || 0);
+    return bTime - aTime;
+  });
 }
 
 /**
@@ -1060,7 +1178,6 @@ export async function batchDeleteFromCloudStore(recordsToDelete) {
  */
 export async function clearAllActiveUsers() {
   loadRequestsFromDisk();
-  await syncFromCloudStore();
   const activeUsers = getActiveUsersList();
   for (const user of activeUsers) {
     if (user.token) {
@@ -1079,7 +1196,6 @@ export async function clearAllActiveUsers() {
  */
 export async function clearAllBlockedUsers() {
   loadRequestsFromDisk();
-  await syncFromCloudStore();
   const blockedUsers = getBlockedUsersList();
   for (const user of blockedUsers) {
     if (user.token) {

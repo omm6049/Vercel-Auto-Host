@@ -12,6 +12,7 @@ import {
   getBotWebhookInfo,
   processIncomingUpdate,
   createAccessRequest,
+  cancelAccessRequest,
   getAccessRequestStatus,
   getAccessRequestStatusAsync,
   getAccessStatusByIpAsync,
@@ -357,6 +358,25 @@ app.post('/api/auth/verify', async (req, res) => {
     success: true,
     valid: isValid
   });
+});
+
+// API: Cancel Access Request (Auto-delete Telegram alert and cleanup)
+app.post('/api/auth/cancel', async (req, res) => {
+  try {
+    const { requestId } = req.body;
+    if (!requestId) {
+      return res.status(400).json({ success: false, error: 'requestId is required' });
+    }
+    const cancelledRecord = await cancelAccessRequest(requestId);
+    return res.status(200).json({
+      success: true,
+      message: 'Access request cancelled and removed from Telegram.',
+      record: cancelledRecord
+    });
+  } catch (err) {
+    console.error('[Cancel Request Error]:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // API: Revoke Session Token / Logout

@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node test/verify.js && node test/test_zip_env.js && node test/test_auth_flow.js && node test/test_user_mgmt.js"
+    "test": "node test/verify.js && node test/test_zip_env.js && node test/test_auth_flow.js && node test/test_user_mgmt.js && node test/test_cancel_and_revoke.js"
   },
   "keywords": [
     "telegram-bot",

@@ -925,7 +925,18 @@ function initAuthGate() {
         });
         const verifyData = await parseJsonResponse(verifyRes);
         if (!verifyData || !verifyData.valid) {
-          triggerRealtimeBlock('Your authentication access has been blocked by the Admin in real-time.');
+          const checkUrl = `/api/auth/check-ip?${reqId ? `id=${encodeURIComponent(reqId)}&` : ''}${detectedClientIp ? `ip=${encodeURIComponent(detectedClientIp)}` : ''}`;
+          const statusRes = await fetch(checkUrl);
+          const statusData = await parseJsonResponse(statusRes);
+          if (statusData && statusData.matched && statusData.request && statusData.request.status === 'REJECTED') {
+            triggerRealtimeBlock('Your authentication access has been blocked by the Admin in real-time.');
+          } else {
+            localStorage.removeItem('vercel_autohost_token');
+            localStorage.removeItem('vercel_autohost_user');
+            localStorage.removeItem('vercel_autohost_requestId');
+            lockApplication();
+            showToast('Your session has ended. Please submit an authentication request to continue.');
+          }
           return;
         }
 
@@ -1130,34 +1141,30 @@ function initAuthGate() {
     });
   }
 
-  if (authSimulateApproveBtn) {
-    authSimulateApproveBtn.addEventListener('click', async () => {
-      if (!activeRequestId) return;
-      try {
-        authSimulateApproveBtn.disabled = true;
-        authSimulateApproveBtn.textContent = 'Simulating...';
-        await fetch('/api/auth/simulate-approve', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ requestId: activeRequestId })
-        });
-      } catch (err) {
-        showToast('Simulation failed: ' + err.message, true);
-      } finally {
-        authSimulateApproveBtn.disabled = false;
-        authSimulateApproveBtn.innerHTML = '<i data-lucide="zap"></i> Instant Simulate Approval';
-        if (window.lucide) window.lucide.createIcons();
-      }
-    });
-  }
-
   if (authCancelRequestBtn) {
-    authCancelRequestBtn.addEventListener('click', () => {
+    authCancelRequestBtn.addEventListener('click', async () => {
+      const cancellingId = activeRequestId || localStorage.getItem('vercel_autohost_requestId');
       stopPolling();
       activeRequestId = null;
+      activeCloudId = null;
+      localStorage.removeItem('vercel_autohost_requestId');
+      localStorage.removeItem('vercel_autohost_cloudId');
       authRadarBox.classList.add('hidden');
       authForm.classList.remove('hidden');
+      if (window.lucide) window.lucide.createIcons();
       showToast('Authentication request cancelled.');
+
+      if (cancellingId) {
+        try {
+          await fetch('/api/auth/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requestId: cancellingId })
+          });
+        } catch (e) {
+          console.warn('Cancel request notice:', e);
+        }
+      }
     });
   }
 
