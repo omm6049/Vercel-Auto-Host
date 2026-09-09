@@ -775,8 +775,50 @@ function initAuthGate() {
   let activeRequestId = null;
   let activeCloudId = null;
   let authPollTimer = null;
+  let activeHeartbeatTimer = null;
+
+  const stopPolling = () => {
+    if (authPollTimer) {
+      clearInterval(authPollTimer);
+      authPollTimer = null;
+    }
+  };
+
+  const stopHeartbeat = () => {
+    if (activeHeartbeatTimer) {
+      clearInterval(activeHeartbeatTimer);
+      activeHeartbeatTimer = null;
+    }
+  };
+
+  const triggerRealtimeBlock = (reason = 'Your authentication request has been blocked by the Admin in real-time.') => {
+    stopPolling();
+    stopHeartbeat();
+    localStorage.removeItem('vercel_autohost_token');
+    localStorage.removeItem('vercel_autohost_user');
+    localStorage.removeItem('vercel_autohost_requestId');
+    localStorage.removeItem('vercel_autohost_cloudId');
+
+    if (authSessionPill) authSessionPill.classList.add('hidden');
+    if (launchpadCockpit) launchpadCockpit.classList.add('locked-cockpit');
+    if (authSection) authSection.classList.remove('hidden');
+    if (authForm) authForm.classList.add('hidden');
+    if (authRadarBox) authRadarBox.classList.add('hidden');
+    if (authApprovedBox) authApprovedBox.classList.add('hidden');
+    if (authRejectedBox) authRejectedBox.classList.remove('hidden');
+
+    const rejectedDetail = document.getElementById('rejectedStatusDetail');
+    if (rejectedDetail) {
+      rejectedDetail.textContent = reason;
+    }
+    if (window.lucide) window.lucide.createIcons();
+
+    showToast('🚫 Request Blocked: Your access has been blocked by the Admin in real-time.', true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   const lockApplication = () => {
+    stopHeartbeat();
     if (authSection) authSection.classList.remove('hidden');
     if (authForm) authForm.classList.remove('hidden');
     if (authRadarBox) authRadarBox.classList.add('hidden');
@@ -787,9 +829,52 @@ function initAuthGate() {
     if (window.lucide) window.lucide.createIcons();
   };
 
+  const startHeartbeat = () => {
+    stopHeartbeat();
+    activeHeartbeatTimer = setInterval(async () => {
+      const token = localStorage.getItem('vercel_autohost_token');
+      const reqId = localStorage.getItem('vercel_autohost_requestId') || activeRequestId;
+      const cId = localStorage.getItem('vercel_autohost_cloudId') || activeCloudId;
+
+      if (!token) {
+        stopHeartbeat();
+        return;
+      }
+
+      try {
+        // 1. Verify token validity via /api/auth/verify
+        const verifyRes = await fetch('/api/auth/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token })
+        });
+        const verifyData = await parseJsonResponse(verifyRes);
+        if (!verifyData || !verifyData.valid) {
+          triggerRealtimeBlock('Your authentication access has been blocked by the Admin in real-time.');
+          return;
+        }
+
+        // 2. Check request status via /api/auth/status if reqId is available
+        if (reqId) {
+          const statusUrl = `/api/auth/status?id=${encodeURIComponent(reqId)}${cId ? `&cloudId=${encodeURIComponent(cId)}` : ''}`;
+          const statusRes = await fetch(statusUrl);
+          const statusData = await parseJsonResponse(statusRes);
+          if (statusData && statusData.request && statusData.request.status === 'REJECTED') {
+            triggerRealtimeBlock('Your authentication access has been blocked by the Admin in real-time.');
+            return;
+          }
+        }
+      } catch (err) {
+        // Network retry on next tick
+      }
+    }, 1500);
+  };
+
   const unlockApplication = (userName = 'Authorized Visitor', animate = true) => {
     if (authSessionUser) authSessionUser.textContent = userName;
     if (authSessionPill) authSessionPill.classList.remove('hidden');
+
+    startHeartbeat();
 
     if (animate) {
       if (authForm) authForm.classList.add('hidden');
@@ -813,7 +898,6 @@ function initAuthGate() {
       if (window.lucide) window.lucide.createIcons();
     }
   };
-
 
   // Safe JSON parsing helper to prevent syntax errors on HTML responses
   const parseJsonResponse = async (res) => {
@@ -852,14 +936,6 @@ function initAuthGate() {
 
   checkAuthSession();
 
-  // Stop polling helper
-  const stopPolling = () => {
-    if (authPollTimer) {
-      clearInterval(authPollTimer);
-      authPollTimer = null;
-    }
-  };
-
   // Start status polling with cloudId and requestId support
   const startPolling = (requestId, name, cloudId = null) => {
     stopPolling();
@@ -881,13 +957,13 @@ function initAuthGate() {
           stopPolling();
           localStorage.setItem('vercel_autohost_token', token);
           localStorage.setItem('vercel_autohost_user', name);
+          localStorage.setItem('vercel_autohost_requestId', requestId);
+          if (cloudId) {
+            localStorage.setItem('vercel_autohost_cloudId', cloudId);
+          }
           unlockApplication(name, true);
         } else if (status === 'REJECTED') {
-          stopPolling();
-          if (authRadarBox) authRadarBox.classList.add('hidden');
-          if (authRejectedBox) authRejectedBox.classList.remove('hidden');
-          if (window.lucide) window.lucide.createIcons();
-          showToast('Your authentication request has been blocked by the Admin.', true);
+          triggerRealtimeBlock('Your authentication request has been blocked by the Admin in real-time.');
         }
       } catch (err) {
         console.warn('Polling error:', err);
@@ -1050,6 +1126,8 @@ function initAuthGate() {
       }
       localStorage.removeItem('vercel_autohost_token');
       localStorage.removeItem('vercel_autohost_user');
+      localStorage.removeItem('vercel_autohost_requestId');
+      localStorage.removeItem('vercel_autohost_cloudId');
       lockApplication();
       showToast('Session locked. Submit request to access again.');
       window.scrollTo({ top: 0, behavior: 'smooth' });

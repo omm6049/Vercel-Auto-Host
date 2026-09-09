@@ -69,16 +69,20 @@ async function runUserManagementTests() {
 
   // 4. Test Blocking an Active User (Block Access action)
   console.log('\n--- Test 4: Block Active User Action (user_block) ---');
+  const aliceActiveToken = approvedAlice.token;
+  assert.strictEqual(verifyAccessToken(aliceActiveToken), true, 'Alice token must initially be valid');
+
   const blockedAlice = await rejectAccessRequest(user1.cloudId || user1.id, 'Admin');
   assert.strictEqual(blockedAlice.status, 'REJECTED');
   assert.strictEqual(blockedAlice.token, null, 'Blocked user token must be cleared');
+  assert.strictEqual(verifyAccessToken(aliceActiveToken), false, 'Alice token must immediately become INVALID when blocked by Admin');
 
   const activeAfterBlock = getActiveUsersList();
   const blockedAfterBlock = getBlockedUsersList();
 
   assert(!activeAfterBlock.some(u => u.id === user1.id), 'Alice should no longer be in Active list');
-  assert(blockedAfterBlock.some(u => u.id === user1.id), 'Alice should now be in Blocked list');
-  console.log('✅ Blocked Alice successfully, moved to Blocked Users list');
+  assert(blockedAfterBlock.some(u => u.id === user1.id), 'Alice should now be present in Blocked Users list');
+  console.log('✅ Blocked Alice successfully: token instantly invalidated, moved from Active Users to Blocked Users in real-time');
 
   // 5. Test Activating a Blocked User (Activate Access action)
   console.log('\n--- Test 5: Reactivate Blocked User Action (user_activate) ---');

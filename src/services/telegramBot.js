@@ -481,6 +481,10 @@ export async function rejectAccessRequest(targetId, rejectedBy = 'Admin') {
     cloudId = record.cloudId;
   }
 
+  if (record.token) {
+    revokeAccessToken(record.token);
+  }
+
   record.status = 'REJECTED';
   record.token = null;
   record.rejectedBy = rejectedBy;
@@ -506,6 +510,8 @@ export async function rejectAccessRequest(targetId, rejectedBy = 'Admin') {
 export function verifyAccessToken(token) {
   if (!token || typeof token !== 'string') return false;
 
+  loadRequestsFromDisk();
+
   if (revokedSessionTokens.has(token)) return false;
 
   // Handle stateless HMAC token (format: tok.<base64Payload>.<signature>)
@@ -519,7 +525,13 @@ export function verifyAccessToken(token) {
       if (crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
         try {
           const payload = JSON.parse(Buffer.from(payloadStr, 'base64url').toString('utf-8'));
-          return Boolean(payload && payload.requestId);
+          if (!payload || !payload.requestId) return false;
+
+          const record = accessRequests.get(payload.requestId);
+          if (record && record.status === 'REJECTED') {
+            return false;
+          }
+          return true;
         } catch {
           return false;
         }
