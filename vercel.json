@@ -1,9 +1,5 @@
 {
-  "version": 2,
-  "rewrites": [
-    {
-      "source": "/((?!api/).*)",
-      "destination": "/public/$1"
-    }
-  ]
+  "cleanUrls": true,
+  "trailingSlash": false
 }
+
