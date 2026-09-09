@@ -166,15 +166,15 @@
           </div>
         </div>
 
-        <!-- Rejected State -->
+        <!-- Rejected / Blocked State -->
         <div class="auth-rejected-box hidden" id="authRejectedBox">
           <div class="rejected-icon-core">
-            <i data-lucide="x-circle"></i>
+            <i data-lucide="shield-alert"></i>
           </div>
           <div class="rejected-text-block">
-            <span class="rejected-badge">❌ Request Declined</span>
-            <h3 class="rejected-title">Access Request Not Approved</h3>
-            <p class="rejected-sub">Your request was declined by the administrator. Please update your details or try again.</p>
+            <span class="rejected-badge">🚫 Request Blocked</span>
+            <h3 class="rejected-title">Request Blocked by Admin</h3>
+            <p class="rejected-sub" id="rejectedStatusDetail">Your authentication request has been blocked by the Admin. You do not have permission to access the deployment launchpad.</p>
             <button type="button" class="btn-reset-auth" id="authRetryBtn">
               <i data-lucide="rotate-ccw"></i> Submit New Request
             </button>

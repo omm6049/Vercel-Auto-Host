@@ -52,18 +52,22 @@ export default async function handler(req, res) {
       finalIp = browserIp || serverIp || '127.0.0.1 (Localhost)';
     }
 
+    const hostUrl = req.headers['x-forwarded-host'] ? `https://${req.headers['x-forwarded-host']}` : (req.headers.host ? `https://${req.headers.host}` : null);
+
     const requestRecord = await createAccessRequest({
       name: name.trim(),
       reason: reason ? reason.trim() : 'Website deployment access request',
       ip: finalIp,
       clientTime,
       clientTimezone,
-      deviceInfo
+      deviceInfo,
+      hostUrl
     });
 
     return res.status(200).json({
       success: true,
       requestId: requestRecord.id,
+      cloudId: requestRecord.cloudId || null,
       status: requestRecord.status,
       message: 'Authentication request sent to admin on Telegram.'
     });

@@ -773,6 +773,7 @@ function initAuthGate() {
   const approvedGreetingText = document.getElementById('approvedGreetingText');
 
   let activeRequestId = null;
+  let activeCloudId = null;
   let authPollTimer = null;
 
   const lockApplication = () => {
@@ -859,14 +860,16 @@ function initAuthGate() {
     }
   };
 
-  // Start status polling
-  const startPolling = (requestId, name) => {
+  // Start status polling with cloudId and requestId support
+  const startPolling = (requestId, name, cloudId = null) => {
     stopPolling();
     activeRequestId = requestId;
+    activeCloudId = cloudId;
 
     authPollTimer = setInterval(async () => {
       try {
-        const res = await fetch(`/api/auth/status?id=${encodeURIComponent(requestId)}`);
+        const pollUrl = `/api/auth/status?id=${encodeURIComponent(requestId)}${cloudId ? `&cloudId=${encodeURIComponent(cloudId)}` : ''}`;
+        const res = await fetch(pollUrl);
         if (!res.ok) return;
 
         const data = await parseJsonResponse(res);
@@ -883,12 +886,13 @@ function initAuthGate() {
           stopPolling();
           if (authRadarBox) authRadarBox.classList.add('hidden');
           if (authRejectedBox) authRejectedBox.classList.remove('hidden');
-          showToast('Your access request was declined by the administrator.', true);
+          if (window.lucide) window.lucide.createIcons();
+          showToast('Your authentication request has been blocked by the Admin.', true);
         }
       } catch (err) {
         console.warn('Polling error:', err);
       }
-    }, 1800);
+    }, 1500);
   };
 
   // Fast background public IP discovery
@@ -975,7 +979,7 @@ function initAuthGate() {
         // Switch to Waiting Radar
         authForm.classList.add('hidden');
         authRadarBox.classList.remove('hidden');
-        startPolling(data.requestId, name);
+        startPolling(data.requestId, name, data.cloudId || null);
         showToast('Authentication request sent to Telegram Admin!');
       } catch (err) {
         showToast(err.message, true);

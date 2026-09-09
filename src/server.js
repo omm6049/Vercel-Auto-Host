@@ -12,9 +12,11 @@ import {
   getBotWebhookInfo,
   createAccessRequest,
   getAccessRequestStatus,
+  getAccessRequestStatusAsync,
   verifyAccessToken,
   revokeAccessToken,
-  approveAccessRequest
+  approveAccessRequest,
+  rejectAccessRequest
 } from './services/telegramBot.js';
 import { deployToVercel, verifyVercelCredentials, sanitizeProjectName } from './services/vercel.js';
 
@@ -157,18 +159,22 @@ app.post('/api/auth/request', async (req, res) => {
       finalIp = browserIp || serverIp || '127.0.0.1 (Localhost)';
     }
 
+    const hostUrl = req.headers['x-forwarded-host'] ? `https://${req.headers['x-forwarded-host']}` : (req.headers.host ? `http://${req.headers.host}` : null);
+
     const requestRecord = await createAccessRequest({
       name: name.trim(),
       reason: reason ? reason.trim() : 'Website deployment access request',
       ip: finalIp,
       clientTime,
       clientTimezone,
-      deviceInfo
+      deviceInfo,
+      hostUrl
     });
 
     res.json({
       success: true,
       requestId: requestRecord.id,
+      cloudId: requestRecord.cloudId || null,
       status: requestRecord.status,
       message: 'Authentication request sent to admin on Telegram.'
     });
@@ -177,16 +183,17 @@ app.post('/api/auth/request', async (req, res) => {
   }
 });
 
-
 // API: Poll Status of an Access Request
 app.get('/api/auth/status', async (req, res) => {
   const requestId = req.query.id || req.query.requestId;
+  const cloudId = req.query.cloudId || null;
   if (!requestId) {
     return res.status(400).json({ success: false, error: 'requestId parameter is required' });
   }
 
-  const record = (await getAccessRequestStatus(requestId)) || {
+  const record = (await getAccessRequestStatusAsync(requestId, cloudId)) || {
     id: requestId,
+    cloudId: cloudId || null,
     name: 'Visitor',
     reason: 'Access Request',
     status: 'PENDING',
@@ -197,11 +204,13 @@ app.get('/api/auth/status', async (req, res) => {
     success: true,
     request: {
       id: record.id,
+      cloudId: record.cloudId || cloudId || null,
       name: record.name,
       reason: record.reason,
       status: record.status,
       token: record.token || null,
-      approvedBy: record.approvedBy || null
+      approvedBy: record.approvedBy || null,
+      rejectedBy: record.rejectedBy || null
     }
   });
 });

@@ -44,6 +44,55 @@ const ADMIN_CHATS_FILE = path.join(STORE_DIR, 'vercel_autohost_admins.json');
 const CLOUD_SYNC_URL = 'https://api.restful-api.dev/objects';
 
 /**
+ * Creates a cloud sync object for cross-instance access request state sharing.
+ */
+async function createCloudSyncRecord(record) {
+  try {
+    const res = await axios.post(CLOUD_SYNC_URL, {
+      name: record.id,
+      data: record
+    }, { timeout: 3500 });
+    if (res.data && res.data.id) {
+      return res.data.id;
+    }
+  } catch (err) {
+    console.warn('[Cloud Sync Create Notice]:', err.message);
+  }
+  return null;
+}
+
+/**
+ * Updates an existing cloud sync object by cloudId.
+ */
+async function updateCloudSyncRecord(cloudId, record) {
+  if (!cloudId) return;
+  try {
+    await axios.put(`${CLOUD_SYNC_URL}/${cloudId}`, {
+      name: record.id,
+      data: record
+    }, { timeout: 3500 });
+  } catch (err) {
+    console.warn('[Cloud Sync Update Notice]:', err.message);
+  }
+}
+
+/**
+ * Fetches the latest state from cloud sync object by cloudId.
+ */
+async function fetchCloudSyncRecord(cloudId) {
+  if (!cloudId) return null;
+  try {
+    const res = await axios.get(`${CLOUD_SYNC_URL}/${cloudId}`, { timeout: 3000 });
+    if (res.data && res.data.data) {
+      return res.data.data;
+    }
+  } catch (err) {
+    // Network or not found
+  }
+  return null;
+}
+
+/**
  * Loads persisted access requests from /tmp
  */
 function loadRequestsFromDisk() {
@@ -54,6 +103,9 @@ function loadRequestsFromDisk() {
         for (const item of data) {
           if (item && item.id) {
             accessRequests.set(item.id, item);
+            if (item.cloudId) {
+              accessRequests.set(item.cloudId, item);
+            }
           }
         }
       }
@@ -100,6 +152,7 @@ async function syncRequestToTelegramStore(record) {
     // Update store with current record
     store[record.id] = {
       id: record.id,
+      cloudId: record.cloudId || null,
       name: record.name,
       reason: record.reason,
       ip: record.ip,
@@ -108,6 +161,7 @@ async function syncRequestToTelegramStore(record) {
       status: record.status,
       token: record.token || null,
       approvedBy: record.approvedBy || null,
+      rejectedBy: record.rejectedBy || null,
       updatedAt: Date.now()
     };
 
@@ -165,6 +219,7 @@ async function fetchRequestFromTelegramStore(requestId) {
       if (store && store[requestId]) {
         const item = store[requestId];
         accessRequests.set(requestId, item);
+        if (item.cloudId) accessRequests.set(item.cloudId, item);
         saveRequestsToDisk();
         return item;
       }
@@ -172,7 +227,6 @@ async function fetchRequestFromTelegramStore(requestId) {
   } catch (err) {}
   return null;
 }
-
 
 /**
  * Loads and saves admin chat IDs to /tmp
@@ -247,8 +301,9 @@ export let botInstance = null;
 
 /**
  * Creates a new visitor authentication & access request and broadcasts approval buttons to Telegram Admin.
+ * Displays only TWO options in Telegram: Approve Access or Reject Access.
  */
-export async function createAccessRequest({ name, reason, ip, clientTime, clientTimezone, deviceInfo }) {
+export async function createAccessRequest({ name, reason, ip, clientTime, clientTimezone, deviceInfo, hostUrl }) {
   loadRequestsFromDisk();
 
   const cleanName = (name || 'Anonymous Visitor').trim();
@@ -269,6 +324,7 @@ export async function createAccessRequest({ name, reason, ip, clientTime, client
 
   const record = {
     id: requestId,
+    cloudId: null,
     name: cleanName,
     reason: cleanReason,
     ip: cleanIp,
@@ -279,19 +335,33 @@ export async function createAccessRequest({ name, reason, ip, clientTime, client
     createdAt: Date.now()
   };
 
+  // Sync to global cloud store for multi-container lambdas
+  const cloudId = await createCloudSyncRecord(record);
+  if (cloudId) {
+    record.cloudId = cloudId;
+  }
+
   accessRequests.set(requestId, record);
+  if (cloudId) {
+    accessRequests.set(cloudId, record);
+  }
   saveRequestsToDisk();
 
-  // Sync to global store for multi-container lambdas
+  // Also sync to global telegram store
   syncRequestToTelegramStore(record).catch(() => {});
+
+  // Auto-register webhook on Vercel if hostUrl provided
+  if (hostUrl && (process.env.VERCEL === '1' || process.env.USE_WEBHOOK === 'true')) {
+    setBotWebhook(hostUrl).catch(() => {});
+  }
 
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const adminChatIds = await discoverAdminChatIds();
 
-  const fallbackApproveUrl = `https://vercel-auto-host.vercel.app/api/auth/approve-link?id=${requestId}&action=approve`;
-  const fallbackRejectUrl = `https://vercel-auto-host.vercel.app/api/auth/approve-link?id=${requestId}&action=reject`;
+  // Target identifier for callback query: cloudId if available, else requestId
+  const targetId = cloudId || requestId;
 
-  // Broadcast to Telegram admin(s)
+  // Broadcast to Telegram admin(s) - ONLY TWO BUTTONS: Approve Access or Reject Access
   if (token && adminChatIds.length > 0) {
     const alertHtml =
       `🔐 <b>NEW WEBSITE ACCESS REQUEST</b>\n\n` +
@@ -300,16 +370,13 @@ export async function createAccessRequest({ name, reason, ip, clientTime, client
       `🌐 <b>Client IP:</b> <code>${escapeHtml(cleanIp)}</code>\n` +
       `⏰ <b>Exact Time:</b> ${escapeHtml(cleanTime)}${escapeHtml(tzLabel)}\n` +
       `💻 <b>Device / Browser:</b> ${escapeHtml(cleanDevice)}\n\n` +
-      `👇 <b>Choose an option to approve or decline access:</b>`;
+      `👇 <b>Choose an option to approve or reject access:</b>`;
 
     const replyMarkup = {
       inline_keyboard: [
         [
-          { text: '✅ Approve Access', callback_data: `auth_approve:${requestId}` },
-          { text: '❌ Reject Request', callback_data: `auth_reject:${requestId}` }
-        ],
-        [
-          { text: '⚡ 1-Tap Browser Approval', url: fallbackApproveUrl }
+          { text: '✅ Approve Access', callback_data: `auth_approve:${targetId}` },
+          { text: '❌ Reject Access', callback_data: `auth_reject:${targetId}` }
         ]
       ]
     };
@@ -332,7 +399,6 @@ export async function createAccessRequest({ name, reason, ip, clientTime, client
   return record;
 }
 
-
 /**
  * Returns current status of an access request (sync fallback).
  */
@@ -344,6 +410,7 @@ export function getAccessRequestStatus(requestId) {
   // Always return valid PENDING object instead of null (prevents 404s)
   return {
     id: requestId,
+    cloudId: null,
     name: 'Visitor',
     reason: 'Access verification',
     status: 'PENDING',
@@ -352,21 +419,50 @@ export function getAccessRequestStatus(requestId) {
 }
 
 /**
- * Returns current status of an access request with asynchronous store verification.
+ * Returns current status of an access request with asynchronous cloud & store verification.
  */
-export async function getAccessRequestStatusAsync(requestId) {
+export async function getAccessRequestStatusAsync(requestId, cloudId = null) {
   loadRequestsFromDisk();
-  let record = accessRequests.get(requestId);
 
+  let record = accessRequests.get(requestId);
+  if (!record && cloudId) {
+    record = accessRequests.get(cloudId);
+  }
+
+  // If already reached final status (APPROVED or REJECTED), return immediately
+  if (record && (record.status === 'APPROVED' || record.status === 'REJECTED')) {
+    return record;
+  }
+
+  // Query Cloud Sync Store if cloudId is available or if target might be a cloudId
+  const targetCloudId = cloudId || (record && record.cloudId) || (requestId && requestId.length > 20 && !requestId.startsWith('req_') ? requestId : null);
+  if (targetCloudId) {
+    const cloudRecord = await fetchCloudSyncRecord(targetCloudId);
+    if (cloudRecord && cloudRecord.status) {
+      record = cloudRecord;
+      accessRequests.set(requestId, record);
+      accessRequests.set(targetCloudId, record);
+      saveRequestsToDisk();
+      return record;
+    }
+  }
+
+  // Fallback check from Telegram store
   if (!record || record.status === 'PENDING') {
     const storedRecord = await fetchRequestFromTelegramStore(requestId);
-    if (storedRecord) record = storedRecord;
+    if (storedRecord) {
+      record = storedRecord;
+      accessRequests.set(requestId, record);
+      if (record.cloudId) accessRequests.set(record.cloudId, record);
+      return record;
+    }
   }
 
   if (record) return record;
 
   return {
     id: requestId,
+    cloudId: cloudId || null,
     name: 'Visitor',
     reason: 'Access verification',
     status: 'PENDING',
@@ -375,15 +471,29 @@ export async function getAccessRequestStatusAsync(requestId) {
 }
 
 /**
- * Approves an access request, generates a secure session token, and updates status.
+ * Approves an access request, generates a secure HMAC session token, and updates status.
  */
-export async function approveAccessRequest(requestId, approvedBy = 'Admin') {
+export async function approveAccessRequest(targetId, approvedBy = 'Admin') {
   loadRequestsFromDisk();
 
-  let record = accessRequests.get(requestId);
+  let record = accessRequests.get(targetId);
+  let cloudId = null;
+
+  if (!record) {
+    // Try fetching from cloud sync store
+    const cloudRecord = await fetchCloudSyncRecord(targetId);
+    if (cloudRecord) {
+      record = cloudRecord;
+      cloudId = targetId;
+    }
+  } else if (record.cloudId) {
+    cloudId = record.cloudId;
+  }
+
   if (!record) {
     record = {
-      id: requestId,
+      id: targetId.startsWith('req_') ? targetId : `req_${targetId}`,
+      cloudId: targetId.length > 20 && !targetId.startsWith('req_') ? targetId : null,
       name: 'Authorized Visitor',
       reason: 'Approved via Telegram',
       ip: 'Unknown',
@@ -392,9 +502,13 @@ export async function approveAccessRequest(requestId, approvedBy = 'Admin') {
     };
   }
 
+  if (!cloudId && record.cloudId) {
+    cloudId = record.cloudId;
+  }
+
   // Generate stateless HMAC-signed token
   const sessionToken = signSessionToken({
-    requestId,
+    requestId: record.id,
     name: record.name,
     approvedBy,
     approvedAt: Date.now()
@@ -405,25 +519,45 @@ export async function approveAccessRequest(requestId, approvedBy = 'Admin') {
   record.approvedBy = approvedBy;
   record.approvedAt = Date.now();
 
-  accessRequests.set(requestId, record);
+  accessRequests.set(record.id, record);
+  if (cloudId) {
+    accessRequests.set(cloudId, record);
+  }
   saveRequestsToDisk();
 
-  // Sync to global store
+  // Sync to global cloud store & telegram store
+  if (cloudId) {
+    await updateCloudSyncRecord(cloudId, record);
+  }
   await syncRequestToTelegramStore(record);
 
   return record;
 }
 
 /**
- * Rejects an access request and updates status.
+ * Rejects an access request and updates status to REJECTED.
  */
-export async function rejectAccessRequest(requestId, rejectedBy = 'Admin') {
+export async function rejectAccessRequest(targetId, rejectedBy = 'Admin') {
   loadRequestsFromDisk();
 
-  let record = accessRequests.get(requestId);
+  let record = accessRequests.get(targetId);
+  let cloudId = null;
+
+  if (!record) {
+    // Try fetching from cloud sync store
+    const cloudRecord = await fetchCloudSyncRecord(targetId);
+    if (cloudRecord) {
+      record = cloudRecord;
+      cloudId = targetId;
+    }
+  } else if (record.cloudId) {
+    cloudId = record.cloudId;
+  }
+
   if (!record) {
     record = {
-      id: requestId,
+      id: targetId.startsWith('req_') ? targetId : `req_${targetId}`,
+      cloudId: targetId.length > 20 && !targetId.startsWith('req_') ? targetId : null,
       name: 'Visitor',
       reason: 'Rejected via Telegram',
       ip: 'Unknown',
@@ -432,14 +566,25 @@ export async function rejectAccessRequest(requestId, rejectedBy = 'Admin') {
     };
   }
 
+  if (!cloudId && record.cloudId) {
+    cloudId = record.cloudId;
+  }
+
   record.status = 'REJECTED';
+  record.token = null;
   record.rejectedBy = rejectedBy;
   record.rejectedAt = Date.now();
 
-  accessRequests.set(requestId, record);
+  accessRequests.set(record.id, record);
+  if (cloudId) {
+    accessRequests.set(cloudId, record);
+  }
   saveRequestsToDisk();
 
-  // Sync to global store
+  // Sync to global cloud store & telegram store
+  if (cloudId) {
+    await updateCloudSyncRecord(cloudId, record);
+  }
   await syncRequestToTelegramStore(record);
 
   return record;
@@ -754,8 +899,8 @@ export async function processIncomingUpdate(update) {
 
     // Handle 1-Click Visitor Authentication Approvals
     if (data && data.startsWith('auth_approve:')) {
-      const requestId = data.split(':')[1];
-      const record = await approveAccessRequest(requestId, cb.from?.first_name || 'Admin');
+      const targetId = data.substring('auth_approve:'.length);
+      const record = await approveAccessRequest(targetId, cb.from?.first_name || 'Admin');
 
       if (token) {
         try {
@@ -774,9 +919,9 @@ export async function processIncomingUpdate(update) {
               text: `✅ <b>ACCESS REQUEST APPROVED</b>\n\n` +
                     `👤 <b>Visitor Name:</b> ${escapeHtml(record.name)}\n` +
                     `🎯 <b>Reason for Contact:</b> ${escapeHtml(record.reason)}\n` +
-                    `🛡️ <b>Status:</b> Granted by ${escapeHtml(cb.from?.first_name || 'Admin')} ✅\n` +
+                    `🛡️ <b>Status:</b> Approved by ${escapeHtml(cb.from?.first_name || 'Admin')} ✅\n` +
                     `🕒 <b>Approved At:</b> ${new Date().toLocaleTimeString()}\n\n` +
-                    `<i>Website launchpad is now unlocked for this visitor.</i>`,
+                    `<i>Website deployment launchpad is now unlocked for this visitor.</i>`,
               parse_mode: 'HTML'
             }, { timeout: 3500 });
           } catch (e) {
@@ -789,14 +934,14 @@ export async function processIncomingUpdate(update) {
 
     // Handle 1-Click Visitor Authentication Rejections
     if (data && data.startsWith('auth_reject:')) {
-      const requestId = data.split(':')[1];
-      const record = await rejectAccessRequest(requestId, cb.from?.first_name || 'Admin');
+      const targetId = data.substring('auth_reject:'.length);
+      const record = await rejectAccessRequest(targetId, cb.from?.first_name || 'Admin');
 
       if (token) {
         try {
           await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
             callback_query_id: cb.id,
-            text: `❌ Access DECLINED for ${record ? record.name : 'visitor'}`,
+            text: `❌ Access REJECTED for ${record ? record.name : 'visitor'}`,
             show_alert: false
           }, { timeout: 3500 });
         } catch {}
@@ -806,11 +951,12 @@ export async function processIncomingUpdate(update) {
             await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
               chat_id: chatId,
               message_id: messageId,
-              text: `❌ <b>ACCESS REQUEST DECLINED</b>\n\n` +
+              text: `❌ <b>ACCESS REQUEST REJECTED</b>\n\n` +
                     `👤 <b>Visitor Name:</b> ${escapeHtml(record.name)}\n` +
                     `🎯 <b>Reason for Contact:</b> ${escapeHtml(record.reason)}\n` +
-                    `🚫 <b>Status:</b> Rejected by ${escapeHtml(cb.from?.first_name || 'Admin')}\n` +
-                    `🕒 <b>Declined At:</b> ${new Date().toLocaleTimeString()}`,
+                    `🚫 <b>Status:</b> Blocked by Admin (${escapeHtml(cb.from?.first_name || 'Admin')}) ❌\n` +
+                    `🕒 <b>Rejected At:</b> ${new Date().toLocaleTimeString()}\n\n` +
+                    `<i>Access to the deployment launchpad has been blocked.</i>`,
               parse_mode: 'HTML'
             }, { timeout: 3500 });
           } catch (e) {
