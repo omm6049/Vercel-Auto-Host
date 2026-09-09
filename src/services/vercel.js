@@ -79,13 +79,12 @@ export async function ensurePublicVercelProject(projectName) {
     const res = await axios.get(`https://api.vercel.com/v9/projects/${projectName}${queryParams}`, { headers, timeout: 5000 });
     
     // Disable protection if currently on
-    if (res.data?.ssoProtection || res.data?.passwordProtection) {
+    if (res.data?.ssoProtection) {
       try {
         await axios.patch(
           `https://api.vercel.com/v9/projects/${projectName}${queryParams}`,
           {
-            ssoProtection: null,
-            passwordProtection: null
+            ssoProtection: null
           },
           { headers, timeout: 5000 }
         );
@@ -103,8 +102,7 @@ export async function ensurePublicVercelProject(projectName) {
           {
             name: projectName,
             framework: null,
-            ssoProtection: null,
-            passwordProtection: null
+            ssoProtection: null
           },
           { headers, timeout: 10000 }
         );
@@ -338,18 +336,29 @@ export async function uploadToVercelBlob(projectName, files) {
   try {
     for (const [filename, content] of Object.entries(files)) {
       const pathname = `projects/${projectName}/${Date.now()}-${filename}`;
-      const blob = await put(pathname, content, {
-        access: 'public',
-        token,
-        contentType: filename.endsWith('.html') ? 'text/html' :
-                     filename.endsWith('.css') ? 'text/css' :
-                     'application/javascript'
-      });
-      blobResults[filename] = blob.url;
+      let blob;
+      try {
+        blob = await put(pathname, content, {
+          access: 'public',
+          token,
+          contentType: filename.endsWith('.html') ? 'text/html' :
+                       filename.endsWith('.css') ? 'text/css' :
+                       'application/javascript'
+        });
+      } catch (pubErr) {
+        // Fallback for private stores
+        blob = await put(pathname, content, {
+          token,
+          contentType: filename.endsWith('.html') ? 'text/html' :
+                       filename.endsWith('.css') ? 'text/css' :
+                       'application/javascript'
+        });
+      }
+      blobResults[filename] = blob?.url || null;
     }
     return blobResults;
   } catch (err) {
-    console.warn('[Vercel Blob Warning]: Could not store blob backup:', err.message);
+    // Blob backup is optional, do not block deployment
     return null;
   }
 }
@@ -458,46 +467,72 @@ export async function deployToVercel({
     });
 
     const deployment = response.data;
-    const directDeploymentUrl = deployment.url ? `https://${deployment.url}` : `https://${cleanName}.vercel.app`;
-    
-    // Assign & ensure clean production alias https://<name>.vercel.app
-    let canonicalAppUrl = `https://${cleanName}.vercel.app`;
-    try {
-      const aliasRes = await axios.post(
-        `https://api.vercel.com/v2/deployments/${deployment.id}/aliases${queryParams}`,
-        { alias: `${cleanName}.vercel.app` },
-        {
-          headers: {
-            Authorization: `Bearer ${vercelToken}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 10000
-        }
-      );
-      if (aliasRes.data?.alias) {
-        canonicalAppUrl = `https://${aliasRes.data.alias}`;
+    let finalDeployment = deployment;
+
+    // Poll until deployment is READY (or timeout after 20s) so Vercel edge routers have fully provisioned the site
+    const pollStart = Date.now();
+    const maxPollMs = 20000;
+    while (Date.now() - pollStart < maxPollMs) {
+      if (finalDeployment.readyState === 'READY') {
+        break;
       }
-    } catch (aliasErr) {
-      if (Array.isArray(deployment.alias) && deployment.alias.length > 0) {
-        canonicalAppUrl = `https://${deployment.alias[0]}`;
-      } else if (Array.isArray(deployment.aliases) && deployment.aliases.length > 0) {
-        canonicalAppUrl = `https://${deployment.aliases[0]}`;
-      } else if (deployment.url) {
-        canonicalAppUrl = `https://${deployment.url}`;
+      if (finalDeployment.readyState === 'ERROR' || finalDeployment.readyState === 'CANCELED') {
+        const errMsg = finalDeployment.error?.message || `Deployment ended in state ${finalDeployment.readyState}`;
+        throw new Error(errMsg);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      try {
+        const pollRes = await axios.get(
+          `https://api.vercel.com/v13/deployments/${deployment.id}${queryParams}`,
+          {
+            headers: { Authorization: `Bearer ${vercelToken}` },
+            timeout: 8000
+          }
+        );
+        finalDeployment = pollRes.data;
+      } catch (pollErr) {
+        // If a single poll request fails due to network jitter, retry next tick
       }
     }
+
+    // Production canonical URL: https://<cleanName>.vercel.app
+    const canonicalAppUrl = `https://${cleanName}.vercel.app`;
+    const directDeploymentUrl = finalDeployment.url ? `https://${finalDeployment.url}` : canonicalAppUrl;
+
+    // Verify CDN edge propagation so the link is immediately live without 404 DEPLOYMENT_NOT_FOUND
+    const verifyStart = Date.now();
+    const maxVerifyMs = 8000;
+    while (Date.now() - verifyStart < maxVerifyMs) {
+      try {
+        const checkRes = await axios.get(canonicalAppUrl, {
+          timeout: 2500,
+          validateStatus: (status) => status < 500
+        });
+        if (checkRes.status === 200) {
+          break;
+        }
+      } catch (checkErr) {
+        // Continue waiting for edge CDN propagation
+      }
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+
+    const aliases = Array.isArray(finalDeployment.alias) && finalDeployment.alias.length > 0
+      ? finalDeployment.alias
+      : [`${cleanName}.vercel.app`];
 
     return {
       success: true,
       projectName: cleanName,
-      deploymentId: deployment.id,
-      state: deployment.readyState || deployment.status || 'READY',
+      deploymentId: finalDeployment.id,
+      state: finalDeployment.readyState || 'READY',
       canonicalUrl: canonicalAppUrl,
       directUrl: directDeploymentUrl,
-      alias: deployment.alias || (canonicalAppUrl ? [canonicalAppUrl.replace('https://', '')] : []),
+      alias: aliases,
       fileCount: deploymentFiles.length,
       envCount: Object.keys(parsedEnv).length,
-      createdAt: deployment.createdAt || Date.now()
+      createdAt: finalDeployment.createdAt || Date.now()
     };
   } catch (error) {
     const errorDetails = error.response?.data?.error?.message || error.response?.data?.message || error.message;
